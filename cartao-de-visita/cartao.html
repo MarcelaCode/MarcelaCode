@@ -27,8 +27,11 @@ html,body{background:#fff}
 .back{background:#fff;color:#292D32;font-family:'IN'}
 .back .band{position:absolute;left:0;top:0;bottom:0;width:41mm;background:#101D32}
 .back .band::after{content:'';position:absolute;inset:0;background:radial-gradient(90% 60% at 50% 100%,rgba(184,155,98,.25),transparent 70%)}
-.photo{position:absolute;left:7mm;top:9.5mm;width:27mm;height:37mm;border-radius:13.5mm 13.5mm 1.2mm 1.2mm;overflow:hidden;border:.25mm solid #B89B62;outline:.9mm solid #101D32}
-.photo img{width:100%;height:100%;object-fit:cover;object-position:50% 14%;display:block}
+.bmono{position:absolute;left:0;top:0;bottom:0;width:41mm;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4mm}
+.ring{width:22mm;height:22mm;border:.3mm solid #B89B62;border-radius:50%;display:grid;place-items:center;position:relative}
+.ring::after{content:'';position:absolute;inset:1.1mm;border:.12mm solid rgba(184,155,98,.4);border-radius:50%}
+.ring span{font-family:'CG';font-weight:600;font-size:27pt;color:#B89B62;letter-spacing:.3mm;padding-bottom:.8mm}
+.bl{width:8mm;height:.25mm;background:#B89B62}
 .info{position:absolute;left:47mm;right:7mm;top:0;bottom:0;display:flex;flex-direction:column;justify-content:center}
 .info .n{font-family:'CG';font-weight:600;font-size:15pt;color:#101D32;line-height:1}
 .info .r{font-size:4.2pt;font-weight:600;letter-spacing:.12em;white-space:nowrap;text-transform:uppercase;color:#8A6F3A;margin-top:1.6mm}
@@ -41,7 +44,7 @@ html,body{background:#fff}
 <section class="card front" id="frente"><div class="glow"></div><div class="frame"></div>
  <div class="c"><div class="mono">GA</div><div class="name">Gabriel <i>Aziz</i></div><div class="rule"></div><div class="role">Advogado · Direito do Consumidor</div></div></section>
 <section class="card back" id="verso"><div class="band"></div>
- <div class="photo"><img src="foto.jpg" alt=""></div>
+ <div class="bmono"><div class="ring"><span>GA</span></div><div class="bl"></div></div>
  <div class="info">
   <div class="n">Gabriel Aziz</div><div class="r">Advogado · Direito do Consumidor</div><div class="l"></div>
   <div class="row"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M12.04 2a9.9 9.9 0 0 0-8.5 14.96L2 22l5.2-1.5A9.9 9.9 0 1 0 12.04 2Zm0 18.1a8.2 8.2 0 0 1-4.2-1.15l-.3-.18-3.08.89.9-3-.2-.31a8.2 8.2 0 1 1 6.88 3.75Zm4.5-6.14c-.25-.12-1.46-.72-1.68-.8-.23-.09-.4-.12-.56.12-.17.25-.64.8-.78.97-.14.16-.29.18-.54.06-.25-.12-1.04-.38-1.98-1.22a7.4 7.4 0 0 1-1.37-1.7c-.14-.25-.02-.38.1-.5.11-.11.25-.29.37-.43.12-.14.17-.25.25-.41.08-.17.04-.31-.02-.43-.06-.12-.56-1.34-.76-1.84-.2-.48-.4-.41-.56-.42h-.47c-.17 0-.43.06-.66.31-.22.25-.86.84-.86 2.05 0 1.2.88 2.37 1 2.54.12.16 1.73 2.64 4.2 3.7.59.26 1.05.41 1.4.52.59.19 1.13.16 1.55.1.47-.07 1.46-.6 1.66-1.17.2-.58.2-1.07.14-1.18-.06-.1-.23-.16-.48-.28Z"/></svg><span class="ph">(00) 00000-0000</span></div>

@@ -1,6 +1,13 @@
 import type { CSSProperties, ElementType, ReactNode } from 'react'
 import { useReveal } from '../hooks/useReveal'
 
+const images = import.meta.glob('../assets/images/*', {
+  eager: true,
+  query: '?url',
+  import: 'default',
+}) as Record<string, string>
+const img = (file: string) => images[`../assets/images/${file}`]
+
 export function Container({
   children,
   className = '',
@@ -102,16 +109,15 @@ export function Picture({
   priority?: boolean
   sizes: string
 }) {
-  const base = import.meta.env.BASE_URL
   return (
     <picture>
       <source
         type="image/webp"
-        srcSet={`${base}images/${name}-640.webp 640w, ${base}images/${name}-1080.webp 1080w`}
+        srcSet={`${img(`${name}-640.webp`)} 640w, ${img(`${name}-1080.webp`)} 1080w`}
         sizes={sizes}
       />
       <img
-        src={`${base}images/${name}.jpg`}
+        src={img(`${name}.jpg`)}
         alt={alt}
         width={width}
         height={height}

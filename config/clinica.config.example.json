@@ -1,0 +1,44 @@
+{
+  "_ajuda": "Copie para config/clinica.config.json e preencha. Campos com __PREENCHER__ BLOQUEIAM o atendimento (o agente nunca inventa dados). Rode 'npm run env:config' para gerar a linha CLINICA_CONFIG_JSON do .env.",
+  "clinica": {
+    "nome": "Vamos Sorrir",
+    "endereco": "__PREENCHER__",
+    "telefone": "__PREENCHER__",
+    "maps_link": "__PREENCHER__",
+    "latitude": null,
+    "longitude": null,
+    "formas_pagamento": "__PREENCHER__"
+  },
+  "agenda": {
+    "fuso_offset_minutos": -180,
+    "horario_funcionamento": "__PREENCHER__",
+    "horario_funcionamento_texto": "__PREENCHER__",
+    "_exemplo_horario_funcionamento": { "1": [["08:00", "12:00"], ["14:00", "18:00"]], "6": [["08:00", "12:00"]] },
+    "feriados": [],
+    "passo_minutos": 30,
+    "antecedencia_minima_minutos": 120,
+    "janela_busca_dias": 14,
+    "proposta_validade_min": 30,
+    "orientacoes_consulta": "__PREENCHER__"
+  },
+  "profissionais": [
+    { "id": "__PREENCHER__", "nome": "__PREENCHER__", "calendar_id": "__PREENCHER__", "especialidade": "" }
+  ],
+  "servicos": [
+    { "codigo": "primeira_consulta", "nome": "Primeira consulta", "duracao_min": 0, "profissional_ids": ["__PREENCHER__"], "preco_texto": "", "descricao": "" },
+    { "codigo": "avaliacao", "nome": "Avaliação odontológica", "duracao_min": 0, "profissional_ids": ["__PREENCHER__"], "preco_texto": "" },
+    { "codigo": "limpeza", "nome": "Limpeza", "duracao_min": 0, "profissional_ids": ["__PREENCHER__"], "preco_texto": "" },
+    { "codigo": "restauracao", "nome": "Restauração", "duracao_min": 0, "profissional_ids": ["__PREENCHER__"], "preco_texto": "" },
+    { "codigo": "extracao", "nome": "Extração", "duracao_min": 0, "profissional_ids": ["__PREENCHER__"], "preco_texto": "" },
+    { "codigo": "canal", "nome": "Tratamento de canal", "duracao_min": 0, "profissional_ids": ["__PREENCHER__"], "preco_texto": "" },
+    { "codigo": "ortodontia", "nome": "Ortodontia", "duracao_min": 0, "profissional_ids": ["__PREENCHER__"], "preco_texto": "" },
+    { "codigo": "clareamento", "nome": "Clareamento", "duracao_min": 0, "profissional_ids": ["__PREENCHER__"], "preco_texto": "" },
+    { "codigo": "retorno", "nome": "Retorno", "duracao_min": 0, "profissional_ids": ["__PREENCHER__"], "preco_texto": "" },
+    { "codigo": "urgencia", "nome": "Urgência odontológica", "duracao_min": 0, "profissional_ids": ["__PREENCHER__"], "preco_texto": "" }
+  ],
+  "_ajuda_servicos": "Remova os serviços que a clínica NÃO oferece. Defina agendavel_online:false para os que exigem avaliação prévia/equipe. 'preco_texto' vazio = o agente não informa preço.",
+  "equipe": { "whatsapp_alertas": "__PREENCHER__", "email_alertas": "" },
+  "urgencia": { "politica": "encaminhar_humano_e_oferecer_primeiros_horarios", "texto_emergencia": "Pelos sintomas que você descreveu, o mais seguro é procurar atendimento de emergência agora: ligue 192 (SAMU) ou vá ao pronto-socorro mais próximo. 🙏" },
+  "privacidade": { "politica_url": "__PREENCHER__", "contato_encarregado": "__PREENCHER__", "retencao": { "sessoes_dias": 7, "fila_dias": 7, "erros_dias": 90, "lembretes_dias": 90, "auditoria_meses": 12, "atendimentos_meses": 12, "_aviso": "Valores SUGERIDOS; a clínica deve validar prazos com assessoria jurídica/DPO." } },
+  "whatsapp": { "templates": { "lembrete": "lembrete_consulta_v1", "alerta_equipe": "alerta_equipe_v1", "idioma": "pt_BR" } }
+}

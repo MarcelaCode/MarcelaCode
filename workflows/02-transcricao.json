@@ -1,0 +1,331 @@
+{
+  "name": "02 - Transcricao de audio",
+  "nodes": [
+    {
+      "parameters": {
+        "inputSource": "passthrough"
+      },
+      "id": "b0c6e36a-4053-4a0a-a6c5-2b421bad6801",
+      "name": "Entrada",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "// ---- lib/util.js ----\n// Utilitários compartilhados. Nos workflows n8n este arquivo é inlinado em cada Code node.\nconst crypto = require('crypto'); // exige NODE_FUNCTION_ALLOW_BUILTIN=crypto no n8n\n\nfunction sha256(s) { return crypto.createHash('sha256').update(String(s)).digest('hex'); }\nfunction hmacSha256(secret, data) { return crypto.createHmac('sha256', secret).update(data).digest('hex'); }\nfunction stripAccents(s) { return String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, ''); }\nfunction norm(s) { return stripAccents(s).toLowerCase().replace(/\\s+/g, ' ').trim(); }\n\n// Normaliza para dígitos com DDI (Brasil por padrão). WhatsApp envia \"5511999999999\".\nfunction normalizePhone(raw) {\n  let d = String(raw || '').replace(/\\D/g, '');\n  if (!d) return '';\n  if (d.startsWith('00')) d = d.slice(2);\n  if (d.length === 10 || d.length === 11) d = '55' + d;\n  // Número móvel BR antigo sem o 9: 55 + DDD + 8 dígitos\n  if (d.length === 12 && d.startsWith('55') && /^[6-9]/.test(d.slice(4))) d = d.slice(0, 4) + '9' + d.slice(4);\n  return d;\n}\nfunction maskPhone(p) { const d = String(p || ''); return d.length > 6 ? d.slice(0, 4) + '*****' + d.slice(-2) : '***'; }\nfunction phoneHash(p) { return sha256('tel:' + normalizePhone(p)).slice(0, 16); }\n\n// Evita injeção de fórmulas em planilhas (=, +, -, @).\nfunction sanitizeCell(v) {\n  if (v === null || v === undefined) return '';\n  const s = String(v);\n  return /^[=+\\-@\\t\\r]/.test(s) ? \"'\" + s : s;\n}\n\n// ---- nó: Preparar ----\n\nconst e = $input.first().json;\nif (!$env.TRANSCRIBE_API_URL || !$env.TRANSCRIBE_API_KEY) return [{ json: { falha: 'transcricao_nao_configurada', _ctx: e._ctx } }];\nreturn [{ json: { media_id: e.media_id, _ctx: e._ctx } }];"
+      },
+      "id": "bad09faa-d8be-4b79-a1b3-fe15314a7d28",
+      "name": "Preparar",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        260,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "2247bd4e-920e-4d4d-ab7a-b445318bd6a2",
+              "leftValue": "={{ !$json.falha }}",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "29dfd661-3a40-455a-ad18-f65435d42cc9",
+      "name": "Configurado?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        520,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://graph.facebook.com/{{ $env.WHATSAPP_API_VERSION }}/{{ $json.media_id }}",
+        "options": {
+          "timeout": 30000,
+          "response": {
+            "response": {
+              "fullResponse": false,
+              "neverError": false
+            }
+          }
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.WHATSAPP_ACCESS_TOKEN }}"
+            }
+          ]
+        }
+      },
+      "id": "946dbf80-2cb9-4b1a-a8e9-348f2858c0cb",
+      "name": "Obter URL da mídia",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        780,
+        0
+      ],
+      "onError": "continueErrorOutput",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $json.url }}",
+        "options": {
+          "timeout": 60000,
+          "response": {
+            "response": {
+              "responseFormat": "file",
+              "outputPropertyName": "data"
+            }
+          }
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.WHATSAPP_ACCESS_TOKEN }}"
+            }
+          ]
+        }
+      },
+      "id": "ce41be3b-a7ce-4652-a589-b30dfffaf7b7",
+      "name": "Baixar áudio",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1040,
+        0
+      ],
+      "onError": "continueErrorOutput",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.TRANSCRIBE_API_URL }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.TRANSCRIBE_API_KEY }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "parameterType": "formBinaryData",
+              "name": "file",
+              "inputDataFieldName": "data"
+            },
+            {
+              "name": "model",
+              "value": "={{ $env.TRANSCRIBE_MODEL }}"
+            },
+            {
+              "name": "language",
+              "value": "pt"
+            },
+            {
+              "name": "response_format",
+              "value": "verbose_json"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 90000
+        }
+      },
+      "id": "cb51b970-04f0-451c-a7ac-9e6e05226dea",
+      "name": "Transcrever",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1300,
+        0
+      ],
+      "onError": "continueErrorOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 3000
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "// ---- lib/util.js ----\n// Utilitários compartilhados. Nos workflows n8n este arquivo é inlinado em cada Code node.\nconst crypto = require('crypto'); // exige NODE_FUNCTION_ALLOW_BUILTIN=crypto no n8n\n\nfunction sha256(s) { return crypto.createHash('sha256').update(String(s)).digest('hex'); }\nfunction hmacSha256(secret, data) { return crypto.createHmac('sha256', secret).update(data).digest('hex'); }\nfunction stripAccents(s) { return String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, ''); }\nfunction norm(s) { return stripAccents(s).toLowerCase().replace(/\\s+/g, ' ').trim(); }\n\n// Normaliza para dígitos com DDI (Brasil por padrão). WhatsApp envia \"5511999999999\".\nfunction normalizePhone(raw) {\n  let d = String(raw || '').replace(/\\D/g, '');\n  if (!d) return '';\n  if (d.startsWith('00')) d = d.slice(2);\n  if (d.length === 10 || d.length === 11) d = '55' + d;\n  // Número móvel BR antigo sem o 9: 55 + DDD + 8 dígitos\n  if (d.length === 12 && d.startsWith('55') && /^[6-9]/.test(d.slice(4))) d = d.slice(0, 4) + '9' + d.slice(4);\n  return d;\n}\nfunction maskPhone(p) { const d = String(p || ''); return d.length > 6 ? d.slice(0, 4) + '*****' + d.slice(-2) : '***'; }\nfunction phoneHash(p) { return sha256('tel:' + normalizePhone(p)).slice(0, 16); }\n\n// Evita injeção de fórmulas em planilhas (=, +, -, @).\nfunction sanitizeCell(v) {\n  if (v === null || v === undefined) return '';\n  const s = String(v);\n  return /^[=+\\-@\\t\\r]/.test(s) ? \"'\" + s : s;\n}\n\n// ---- lib/transcription.js ----\n// Avalia a resposta \"verbose_json\" (formato OpenAI-compatível) de um serviço de transcrição.\nfunction avaliarTranscricao(resp, { minChars = 3, maxNoSpeech = 0.6, minLogprob = -1.0 } = {}) {\n  const texto = String((resp && resp.text) || '').trim();\n  if (texto.replace(/[\\s.,!?…-]/g, '').length < minChars) return { ok: false, motivo: 'vazio' };\n  const segs = (resp && resp.segments) || [];\n  if (segs.length) {\n    const avg = k => segs.reduce((s, x) => s + (Number(x[k]) || 0), 0) / segs.length;\n    if (avg('no_speech_prob') > maxNoSpeech) return { ok: false, motivo: 'sem_fala' };\n    if (avg('avg_logprob') < minLogprob) return { ok: false, motivo: 'baixa_confianca' };\n  }\n  return { ok: true, texto };\n}\n\n// ---- nó: Avaliar qualidade ----\nconst _ctx = ($('Entrada').first().json || {})._ctx;\nconst r = avaliarTranscricao($input.first().json);\nreturn [{ json: r.ok ? { ok: true, texto: r.texto, _ctx } : { ok: false, motivo: r.motivo, _ctx } }];"
+      },
+      "id": "80b59d47-6b1c-4878-a3d3-97163c8840fc",
+      "name": "Avaliar qualidade",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        0,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "// ---- lib/util.js ----\n// Utilitários compartilhados. Nos workflows n8n este arquivo é inlinado em cada Code node.\nconst crypto = require('crypto'); // exige NODE_FUNCTION_ALLOW_BUILTIN=crypto no n8n\n\nfunction sha256(s) { return crypto.createHash('sha256').update(String(s)).digest('hex'); }\nfunction hmacSha256(secret, data) { return crypto.createHmac('sha256', secret).update(data).digest('hex'); }\nfunction stripAccents(s) { return String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, ''); }\nfunction norm(s) { return stripAccents(s).toLowerCase().replace(/\\s+/g, ' ').trim(); }\n\n// Normaliza para dígitos com DDI (Brasil por padrão). WhatsApp envia \"5511999999999\".\nfunction normalizePhone(raw) {\n  let d = String(raw || '').replace(/\\D/g, '');\n  if (!d) return '';\n  if (d.startsWith('00')) d = d.slice(2);\n  if (d.length === 10 || d.length === 11) d = '55' + d;\n  // Número móvel BR antigo sem o 9: 55 + DDD + 8 dígitos\n  if (d.length === 12 && d.startsWith('55') && /^[6-9]/.test(d.slice(4))) d = d.slice(0, 4) + '9' + d.slice(4);\n  return d;\n}\nfunction maskPhone(p) { const d = String(p || ''); return d.length > 6 ? d.slice(0, 4) + '*****' + d.slice(-2) : '***'; }\nfunction phoneHash(p) { return sha256('tel:' + normalizePhone(p)).slice(0, 16); }\n\n// Evita injeção de fórmulas em planilhas (=, +, -, @).\nfunction sanitizeCell(v) {\n  if (v === null || v === undefined) return '';\n  const s = String(v);\n  return /^[=+\\-@\\t\\r]/.test(s) ? \"'\" + s : s;\n}\n\n// ---- nó: Falha na transcrição ----\nconst _ctx = ($('Entrada').first().json || {})._ctx;\nconst d = $('Preparar').first().json; return [{ json: { ok: false, motivo: d.falha || 'falha_servico', _ctx } }];"
+      },
+      "id": "72cfe061-da4d-4688-a601-49774c86eb28",
+      "name": "Falha na transcrição",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        260,
+        220
+      ]
+    }
+  ],
+  "connections": {
+    "Entrada": {
+      "main": [
+        [
+          {
+            "node": "Preparar",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Preparar": {
+      "main": [
+        [
+          {
+            "node": "Configurado?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Configurado?": {
+      "main": [
+        [
+          {
+            "node": "Obter URL da mídia",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Falha na transcrição",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Obter URL da mídia": {
+      "main": [
+        [
+          {
+            "node": "Baixar áudio",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Falha na transcrição",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Baixar áudio": {
+      "main": [
+        [
+          {
+            "node": "Transcrever",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Falha na transcrição",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Transcrever": {
+      "main": [
+        [
+          {
+            "node": "Avaliar qualidade",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Falha na transcrição",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "America/Sao_Paulo",
+    "saveManualExecutions": false,
+    "saveDataSuccessExecution": "none",
+    "saveDataErrorExecution": "none",
+    "saveExecutionProgress": false,
+    "errorWorkflow": "__WF:10__"
+  },
+  "active": false,
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "_id_logico": "02"
+}

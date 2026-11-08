@@ -1,0 +1,383 @@
+{
+  "name": "09 - Lembretes automaticos",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cron",
+              "expression": "0 9 * * *"
+            }
+          ]
+        }
+      },
+      "id": "0adeaa1c-e450-4e37-a85b-b8f7cf3867d5",
+      "name": "Todos os dias às 9h",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cron",
+              "expression": "0 12 * * *"
+            }
+          ]
+        }
+      },
+      "id": "74640f07-b919-4ea1-a48e-fa26b5bd9b6b",
+      "name": "Reprocessar falhas às 12h",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        260,
+        0
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "d0f6fcdd-0808-482d-a5b7-7348e611700f",
+      "name": "Execução manual (teste)",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        520,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "// ---- lib/util.js ----\n// Utilitários compartilhados. Nos workflows n8n este arquivo é inlinado em cada Code node.\nconst crypto = require('crypto'); // exige NODE_FUNCTION_ALLOW_BUILTIN=crypto no n8n\n\nfunction sha256(s) { return crypto.createHash('sha256').update(String(s)).digest('hex'); }\nfunction hmacSha256(secret, data) { return crypto.createHmac('sha256', secret).update(data).digest('hex'); }\nfunction stripAccents(s) { return String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, ''); }\nfunction norm(s) { return stripAccents(s).toLowerCase().replace(/\\s+/g, ' ').trim(); }\n\n// Normaliza para dígitos com DDI (Brasil por padrão). WhatsApp envia \"5511999999999\".\nfunction normalizePhone(raw) {\n  let d = String(raw || '').replace(/\\D/g, '');\n  if (!d) return '';\n  if (d.startsWith('00')) d = d.slice(2);\n  if (d.length === 10 || d.length === 11) d = '55' + d;\n  // Número móvel BR antigo sem o 9: 55 + DDD + 8 dígitos\n  if (d.length === 12 && d.startsWith('55') && /^[6-9]/.test(d.slice(4))) d = d.slice(0, 4) + '9' + d.slice(4);\n  return d;\n}\nfunction maskPhone(p) { const d = String(p || ''); return d.length > 6 ? d.slice(0, 4) + '*****' + d.slice(-2) : '***'; }\nfunction phoneHash(p) { return sha256('tel:' + normalizePhone(p)).slice(0, 16); }\n\n// Evita injeção de fórmulas em planilhas (=, +, -, @).\nfunction sanitizeCell(v) {\n  if (v === null || v === undefined) return '';\n  const s = String(v);\n  return /^[=+\\-@\\t\\r]/.test(s) ? \"'\" + s : s;\n}\n\n// ---- lib/config.js ----\n// Configuração da clínica: nada é inventado; campos pendentes bloqueiam o atendimento.\nconst PENDENTE = '__PREENCHER__';\nconst OBRIGATORIOS = [\n  'clinica.nome', 'clinica.endereco', 'clinica.telefone', 'clinica.maps_link',\n  'privacidade.politica_url', 'privacidade.contato_encarregado',\n  'equipe.whatsapp_alertas', 'whatsapp.templates.lembrete', 'whatsapp.templates.alerta_equipe',\n  'agenda.fuso_offset_minutos', 'agenda.horario_funcionamento',\n];\nfunction get(obj, path) { return path.split('.').reduce((o, k) => (o == null ? undefined : o[k]), obj); }\nfunction vazio(v) {\n  return v === undefined || v === null || v === '' || (typeof v === 'string' && v.includes(PENDENTE)) ||\n    (Array.isArray(v) && v.length === 0) || (typeof v === 'object' && !Array.isArray(v) && Object.keys(v).length === 0);\n}\nfunction carregarConfig(json) {\n  try { return JSON.parse(json); } catch (e) { return null; }\n}\nfunction validarConfig(cfg) {\n  if (!cfg) return { ok: false, faltando: ['CLINICA_CONFIG_JSON inválido ou ausente'] };\n  const faltando = OBRIGATORIOS.filter(p => vazio(get(cfg, p)));\n  const profs = cfg.profissionais || [];\n  if (!profs.length) faltando.push('profissionais');\n  profs.forEach((p, i) => ['id', 'nome', 'calendar_id'].forEach(k => { if (vazio(p[k])) faltando.push(`profissionais[${i}].${k}`); }));\n  const servs = cfg.servicos || [];\n  if (!servs.length) faltando.push('servicos');\n  servs.forEach((s, i) => {\n    ['codigo', 'nome'].forEach(k => { if (vazio(s[k])) faltando.push(`servicos[${i}].${k}`); });\n    if (s.agendavel_online !== false && !(s.duracao_min > 0)) faltando.push(`servicos[${i}].duracao_min`);\n    if (s.agendavel_online !== false && !(s.profissional_ids || []).length) faltando.push(`servicos[${i}].profissional_ids`);\n  });\n  return { ok: faltando.length === 0, faltando };\n}\nfunction servico(cfg, codigo) { return (cfg.servicos || []).find(s => s.codigo === codigo); }\nfunction profissional(cfg, id) { return (cfg.profissionais || []).find(p => p.id === id); }\n// Texto que o agente pode usar sobre a clínica (somente o que está configurado).\nfunction infoClinica(cfg, topico) {\n  const c = cfg.clinica || {};\n  const nd = 'Informação não configurada pela clínica. Não invente: ofereça encaminhar para a equipe.';\n  const val = v => (vazio(v) ? nd : v);\n  switch (topico) {\n    case 'endereco': return { endereco: val(c.endereco), maps_link: val(c.maps_link) };\n    case 'telefone': return { telefone: val(c.telefone) };\n    case 'horario_funcionamento': return { horario: val(cfg.agenda && cfg.agenda.horario_funcionamento_texto) };\n    case 'profissionais': return { profissionais: (cfg.profissionais || []).filter(p => !vazio(p.nome)).map(p => ({ id: p.id, nome: p.nome, especialidade: vazio(p.especialidade) ? undefined : p.especialidade })) };\n    case 'servicos': return { servicos: (cfg.servicos || []).map(s => ({ codigo: s.codigo, nome: s.nome, agendavel_online: s.agendavel_online !== false, descricao: vazio(s.descricao) ? undefined : s.descricao })) };\n    case 'precos': return { precos: (cfg.servicos || []).filter(s => !vazio(s.preco_texto)).map(s => ({ servico: s.nome, preco: s.preco_texto })), observacao: 'Se o serviço não aparece aqui, o preço não foi informado: não invente, ofereça avaliação ou equipe.' };\n    case 'formas_pagamento': return { formas_pagamento: val(c.formas_pagamento) };\n    case 'orientacoes_consulta': return { orientacoes: val(cfg.agenda && cfg.agenda.orientacoes_consulta) };\n    default: return { erro: 'topico_desconhecido', topicos: ['endereco', 'telefone', 'horario_funcionamento', 'profissionais', 'servicos', 'precos', 'formas_pagamento', 'orientacoes_consulta'] };\n  }\n}\n\n// ---- lib/slots.js ----\nconst DIAS = ['domingo', 'segunda-feira', 'terça-feira', 'quarta-feira', 'quinta-feira', 'sexta-feira', 'sábado'];\nconst p2 = n => String(n).padStart(2, '0');\n// \"Relógio local\" = UTC deslocado pelo offset fixo da clínica (Brasil sem horário de verão: -180).\nfunction local(ms, off) { return new Date(ms + off * 60000); }\nfunction hm(s) { const [h, m] = s.split(':').map(Number); return h * 60 + m; }\nfunction toIsoLocal(ms, off) {\n  const d = local(ms, off), s = off <= 0 ? '-' : '+', a = Math.abs(off);\n  return `${d.getUTCFullYear()}-${p2(d.getUTCMonth() + 1)}-${p2(d.getUTCDate())}T${p2(d.getUTCHours())}:${p2(d.getUTCMinutes())}:00${s}${p2(Math.floor(a / 60))}:${p2(a % 60)}`;\n}\nfunction rotulo(startMs, off) {\n  const d = local(startMs, off);\n  return `${DIAS[d.getUTCDay()]}, ${p2(d.getUTCDate())}/${p2(d.getUTCMonth() + 1)} às ${p2(d.getUTCHours())}:${p2(d.getUTCMinutes())}`;\n}\nfunction dataHoraTexto(startMs, off) {\n  const d = local(startMs, off);\n  return { data: `${p2(d.getUTCDate())}/${p2(d.getUTCMonth() + 1)}/${d.getUTCFullYear()} (${DIAS[d.getUTCDay()]})`, hora: `${p2(d.getUTCHours())}:${p2(d.getUTCMinutes())}` };\n}\nfunction slotId(profId, startIso) { return sha256(`${profId}|${new Date(startIso).toISOString()}`).slice(0, 12); }\n\n// busy: { [profissional_id]: [{start, end}] }  (ISO)  |  horario: {\"1\":[[\"08:00\",\"12:00\"]],...}  (0=domingo)\nfunction calcularSlots({ busy, profissionalIds, horario, feriados = [], duracaoMin, passoMin = 30, deMs, ateMs, offset, antecedenciaMin = 120, agoraMs }) {\n  const slots = [], minStart = agoraMs + antecedenciaMin * 60000;\n  const dia0 = Math.floor(local(deMs, offset).getTime() / 86400000) * 86400000 - offset * 60000; // 00:00 local do primeiro dia, em UTC ms\n  for (let dayMs = dia0; dayMs < ateMs; dayMs += 86400000) {\n    const l = local(dayMs, offset), dow = String(l.getUTCDay());\n    const isoDia = `${l.getUTCFullYear()}-${p2(l.getUTCMonth() + 1)}-${p2(l.getUTCDate())}`;\n    if (feriados.includes(isoDia)) continue;\n    for (const [ini, fim] of horario[dow] || []) {\n      for (let m = hm(ini); m + duracaoMin <= hm(fim); m += passoMin) {\n        const s = dayMs + m * 60000, e = s + duracaoMin * 60000;\n        if (s < minStart || s < deMs || e > ateMs) continue;\n        for (const pid of profissionalIds) {\n          const ocupado = (busy[pid] || []).some(b => Date.parse(b.start) < e && Date.parse(b.end) > s);\n          if (!ocupado) slots.push({ slot_id: slotId(pid, new Date(s).toISOString()), profissional_id: pid, inicio: toIsoLocal(s, offset), fim: toIsoLocal(e, offset), inicio_ms: s, rotulo: rotulo(s, offset) });\n        }\n      }\n    }\n  }\n  return slots.sort((a, b) => a.inicio_ms - b.inicio_ms);\n}\nfunction periodoOk(slot, periodo, offset) {\n  if (!periodo) return true;\n  const h = local(slot.inicio_ms, offset).getUTCHours();\n  return periodo === 'manha' ? h < 12 : periodo === 'tarde' ? h >= 12 && h < 18 : periodo === 'noite' ? h >= 18 : true;\n}\n// Duas opções: a primeira disponível e a próxima em outro dia (ou, se não houver, ≥ 2h depois).\nfunction escolherDuas(slots, { periodo, urgencia, offset }) {\n  const lista = slots.filter(s => periodoOk(s, periodo, offset));\n  if (lista.length <= 2) return lista;\n  const a = lista[0];\n  if (urgencia) return [a, lista.find(s => s !== a && s.inicio_ms >= a.inicio_ms + 3600000) || lista[1]];\n  const dia = s => local(s.inicio_ms, offset).getUTCDate();\n  const b = lista.find(s => dia(s) !== dia(a)) || lista.find(s => s.inicio_ms >= a.inicio_ms + 7200000) || lista[1];\n  return [a, b];\n}\n\n// ---- lib/reminders.js ----\nconst MAX_TENTATIVAS = 3;\n\nfunction intervaloAmanha(agoraMs, offset) {\n  const l = new Date(agoraMs + offset * 60000);\n  const hoje0 = Date.UTC(l.getUTCFullYear(), l.getUTCMonth(), l.getUTCDate()) - offset * 60000;\n  const ini = hoje0 + 86400000, fim = ini + 86400000;\n  return { timeMin: new Date(ini).toISOString(), timeMax: new Date(fim).toISOString(), iniMs: ini };\n}\n// events: itens da Calendar API (events.list com singleEvents=true)\nfunction candidatos(events, offset) {\n  const out = [];\n  for (const ev of events || []) {\n    const p = (ev.extendedProperties && ev.extendedProperties.private) || {};\n    if (p.clinica !== 'vamos-sorrir' || ev.status === 'cancelled' || !p.telefone || !ev.start || !ev.start.dateTime) continue;\n    const ms = Date.parse(ev.start.dateTime), { data, hora } = dataHoraTexto(ms, offset);\n    out.push({ chave: `${ev.id}:D-1`, evento_id: ev.id, telefone: p.telefone, telefone_hash: p.telefone_hash || '', nome: p.nome_paciente || '', data, hora, inicio_ms: ms });\n  }\n  return out;\n}\n// log: linhas da aba Lembretes. Regras anti-duplicidade:\n//  ENVIADO -> nunca reenviar | FALHOU com tentativas < MAX -> reenviar | ENVIANDO recente -> aguardar | ENVIANDO antigo -> NÃO reenviar (pode ter saído): revisão humana\nfunction filtrar(cands, log, agoraMs) {\n  const idx = new Map((log || []).map(r => [r.chave, r]));\n  const enviar = [], pular = [];\n  for (const c of cands) {\n    const r = idx.get(c.chave);\n    if (!r) { enviar.push({ ...c, tentativas: 0 }); continue; }\n    const t = Number(r.tentativas || 0);\n    if (r.status === 'ENVIADO') pular.push({ chave: c.chave, motivo: 'ja_enviado' });\n    else if (r.status === 'FALHOU' && t < MAX_TENTATIVAS) enviar.push({ ...c, tentativas: t });\n    else if (r.status === 'FALHOU') pular.push({ chave: c.chave, motivo: 'maximo_tentativas' });\n    else if (r.status === 'ENVIANDO') pular.push({ chave: c.chave, motivo: (agoraMs - Date.parse(r.atualizado_em)) > 30 * 60000 ? 'envio_incerto_revisar' : 'em_andamento' });\n    else pular.push({ chave: c.chave, motivo: 'status_desconhecido' });\n  }\n  return { enviar, pular };\n}\nfunction parametrosTemplate(c, cfg) { return [String(c.nome || '').split(' ')[0] || 'paciente', c.data, c.hora, cfg.clinica.nome]; }\n\n// ---- nó: Preparar janela de amanhã ----\nconst cfg = carregarConfig($env.CLINICA_CONFIG_JSON);\nconst v = validarConfig(cfg);\nif (!v.ok) throw new Error('Configuração da clínica incompleta: ' + v.faltando.join(', '));\nconst iv = intervaloAmanha(Date.now(), cfg.agenda.fuso_offset_minutos);\nreturn cfg.profissionais.map(p => ({ json: { calendar_id: p.calendar_id, timeMin: iv.timeMin, timeMax: iv.timeMax } }));"
+      },
+      "id": "af532a42-6053-424c-a004-42757b85c342",
+      "name": "Preparar janela de amanhã",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        780,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://www.googleapis.com/calendar/v3/calendars/{{ encodeURIComponent($json.calendar_id) }}/events",
+        "options": {
+          "timeout": 30000,
+          "response": {
+            "response": {
+              "fullResponse": false,
+              "neverError": false
+            }
+          }
+        },
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleCalendarOAuth2Api",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "timeMin",
+              "value": "={{ $json.timeMin }}"
+            },
+            {
+              "name": "timeMax",
+              "value": "={{ $json.timeMax }}"
+            },
+            {
+              "name": "singleEvents",
+              "value": "true"
+            },
+            {
+              "name": "orderBy",
+              "value": "startTime"
+            },
+            {
+              "name": "maxResults",
+              "value": "250"
+            }
+          ]
+        }
+      },
+      "id": "8ceb9d4b-d580-49a0-aaeb-6c6f9152958c",
+      "name": "Google Agenda - eventos de amanhã",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1040,
+        0
+      ],
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "credentials": {
+        "googleCalendarOAuth2Api": {
+          "id": "",
+          "name": "Google Calendar - Vamos Sorrir"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "// ---- lib/util.js ----\n// Utilitários compartilhados. Nos workflows n8n este arquivo é inlinado em cada Code node.\nconst crypto = require('crypto'); // exige NODE_FUNCTION_ALLOW_BUILTIN=crypto no n8n\n\nfunction sha256(s) { return crypto.createHash('sha256').update(String(s)).digest('hex'); }\nfunction hmacSha256(secret, data) { return crypto.createHmac('sha256', secret).update(data).digest('hex'); }\nfunction stripAccents(s) { return String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, ''); }\nfunction norm(s) { return stripAccents(s).toLowerCase().replace(/\\s+/g, ' ').trim(); }\n\n// Normaliza para dígitos com DDI (Brasil por padrão). WhatsApp envia \"5511999999999\".\nfunction normalizePhone(raw) {\n  let d = String(raw || '').replace(/\\D/g, '');\n  if (!d) return '';\n  if (d.startsWith('00')) d = d.slice(2);\n  if (d.length === 10 || d.length === 11) d = '55' + d;\n  // Número móvel BR antigo sem o 9: 55 + DDD + 8 dígitos\n  if (d.length === 12 && d.startsWith('55') && /^[6-9]/.test(d.slice(4))) d = d.slice(0, 4) + '9' + d.slice(4);\n  return d;\n}\nfunction maskPhone(p) { const d = String(p || ''); return d.length > 6 ? d.slice(0, 4) + '*****' + d.slice(-2) : '***'; }\nfunction phoneHash(p) { return sha256('tel:' + normalizePhone(p)).slice(0, 16); }\n\n// Evita injeção de fórmulas em planilhas (=, +, -, @).\nfunction sanitizeCell(v) {\n  if (v === null || v === undefined) return '';\n  const s = String(v);\n  return /^[=+\\-@\\t\\r]/.test(s) ? \"'\" + s : s;\n}\n\n// ---- lib/config.js ----\n// Configuração da clínica: nada é inventado; campos pendentes bloqueiam o atendimento.\nconst PENDENTE = '__PREENCHER__';\nconst OBRIGATORIOS = [\n  'clinica.nome', 'clinica.endereco', 'clinica.telefone', 'clinica.maps_link',\n  'privacidade.politica_url', 'privacidade.contato_encarregado',\n  'equipe.whatsapp_alertas', 'whatsapp.templates.lembrete', 'whatsapp.templates.alerta_equipe',\n  'agenda.fuso_offset_minutos', 'agenda.horario_funcionamento',\n];\nfunction get(obj, path) { return path.split('.').reduce((o, k) => (o == null ? undefined : o[k]), obj); }\nfunction vazio(v) {\n  return v === undefined || v === null || v === '' || (typeof v === 'string' && v.includes(PENDENTE)) ||\n    (Array.isArray(v) && v.length === 0) || (typeof v === 'object' && !Array.isArray(v) && Object.keys(v).length === 0);\n}\nfunction carregarConfig(json) {\n  try { return JSON.parse(json); } catch (e) { return null; }\n}\nfunction validarConfig(cfg) {\n  if (!cfg) return { ok: false, faltando: ['CLINICA_CONFIG_JSON inválido ou ausente'] };\n  const faltando = OBRIGATORIOS.filter(p => vazio(get(cfg, p)));\n  const profs = cfg.profissionais || [];\n  if (!profs.length) faltando.push('profissionais');\n  profs.forEach((p, i) => ['id', 'nome', 'calendar_id'].forEach(k => { if (vazio(p[k])) faltando.push(`profissionais[${i}].${k}`); }));\n  const servs = cfg.servicos || [];\n  if (!servs.length) faltando.push('servicos');\n  servs.forEach((s, i) => {\n    ['codigo', 'nome'].forEach(k => { if (vazio(s[k])) faltando.push(`servicos[${i}].${k}`); });\n    if (s.agendavel_online !== false && !(s.duracao_min > 0)) faltando.push(`servicos[${i}].duracao_min`);\n    if (s.agendavel_online !== false && !(s.profissional_ids || []).length) faltando.push(`servicos[${i}].profissional_ids`);\n  });\n  return { ok: faltando.length === 0, faltando };\n}\nfunction servico(cfg, codigo) { return (cfg.servicos || []).find(s => s.codigo === codigo); }\nfunction profissional(cfg, id) { return (cfg.profissionais || []).find(p => p.id === id); }\n// Texto que o agente pode usar sobre a clínica (somente o que está configurado).\nfunction infoClinica(cfg, topico) {\n  const c = cfg.clinica || {};\n  const nd = 'Informação não configurada pela clínica. Não invente: ofereça encaminhar para a equipe.';\n  const val = v => (vazio(v) ? nd : v);\n  switch (topico) {\n    case 'endereco': return { endereco: val(c.endereco), maps_link: val(c.maps_link) };\n    case 'telefone': return { telefone: val(c.telefone) };\n    case 'horario_funcionamento': return { horario: val(cfg.agenda && cfg.agenda.horario_funcionamento_texto) };\n    case 'profissionais': return { profissionais: (cfg.profissionais || []).filter(p => !vazio(p.nome)).map(p => ({ id: p.id, nome: p.nome, especialidade: vazio(p.especialidade) ? undefined : p.especialidade })) };\n    case 'servicos': return { servicos: (cfg.servicos || []).map(s => ({ codigo: s.codigo, nome: s.nome, agendavel_online: s.agendavel_online !== false, descricao: vazio(s.descricao) ? undefined : s.descricao })) };\n    case 'precos': return { precos: (cfg.servicos || []).filter(s => !vazio(s.preco_texto)).map(s => ({ servico: s.nome, preco: s.preco_texto })), observacao: 'Se o serviço não aparece aqui, o preço não foi informado: não invente, ofereça avaliação ou equipe.' };\n    case 'formas_pagamento': return { formas_pagamento: val(c.formas_pagamento) };\n    case 'orientacoes_consulta': return { orientacoes: val(cfg.agenda && cfg.agenda.orientacoes_consulta) };\n    default: return { erro: 'topico_desconhecido', topicos: ['endereco', 'telefone', 'horario_funcionamento', 'profissionais', 'servicos', 'precos', 'formas_pagamento', 'orientacoes_consulta'] };\n  }\n}\n\n// ---- lib/slots.js ----\nconst DIAS = ['domingo', 'segunda-feira', 'terça-feira', 'quarta-feira', 'quinta-feira', 'sexta-feira', 'sábado'];\nconst p2 = n => String(n).padStart(2, '0');\n// \"Relógio local\" = UTC deslocado pelo offset fixo da clínica (Brasil sem horário de verão: -180).\nfunction local(ms, off) { return new Date(ms + off * 60000); }\nfunction hm(s) { const [h, m] = s.split(':').map(Number); return h * 60 + m; }\nfunction toIsoLocal(ms, off) {\n  const d = local(ms, off), s = off <= 0 ? '-' : '+', a = Math.abs(off);\n  return `${d.getUTCFullYear()}-${p2(d.getUTCMonth() + 1)}-${p2(d.getUTCDate())}T${p2(d.getUTCHours())}:${p2(d.getUTCMinutes())}:00${s}${p2(Math.floor(a / 60))}:${p2(a % 60)}`;\n}\nfunction rotulo(startMs, off) {\n  const d = local(startMs, off);\n  return `${DIAS[d.getUTCDay()]}, ${p2(d.getUTCDate())}/${p2(d.getUTCMonth() + 1)} às ${p2(d.getUTCHours())}:${p2(d.getUTCMinutes())}`;\n}\nfunction dataHoraTexto(startMs, off) {\n  const d = local(startMs, off);\n  return { data: `${p2(d.getUTCDate())}/${p2(d.getUTCMonth() + 1)}/${d.getUTCFullYear()} (${DIAS[d.getUTCDay()]})`, hora: `${p2(d.getUTCHours())}:${p2(d.getUTCMinutes())}` };\n}\nfunction slotId(profId, startIso) { return sha256(`${profId}|${new Date(startIso).toISOString()}`).slice(0, 12); }\n\n// busy: { [profissional_id]: [{start, end}] }  (ISO)  |  horario: {\"1\":[[\"08:00\",\"12:00\"]],...}  (0=domingo)\nfunction calcularSlots({ busy, profissionalIds, horario, feriados = [], duracaoMin, passoMin = 30, deMs, ateMs, offset, antecedenciaMin = 120, agoraMs }) {\n  const slots = [], minStart = agoraMs + antecedenciaMin * 60000;\n  const dia0 = Math.floor(local(deMs, offset).getTime() / 86400000) * 86400000 - offset * 60000; // 00:00 local do primeiro dia, em UTC ms\n  for (let dayMs = dia0; dayMs < ateMs; dayMs += 86400000) {\n    const l = local(dayMs, offset), dow = String(l.getUTCDay());\n    const isoDia = `${l.getUTCFullYear()}-${p2(l.getUTCMonth() + 1)}-${p2(l.getUTCDate())}`;\n    if (feriados.includes(isoDia)) continue;\n    for (const [ini, fim] of horario[dow] || []) {\n      for (let m = hm(ini); m + duracaoMin <= hm(fim); m += passoMin) {\n        const s = dayMs + m * 60000, e = s + duracaoMin * 60000;\n        if (s < minStart || s < deMs || e > ateMs) continue;\n        for (const pid of profissionalIds) {\n          const ocupado = (busy[pid] || []).some(b => Date.parse(b.start) < e && Date.parse(b.end) > s);\n          if (!ocupado) slots.push({ slot_id: slotId(pid, new Date(s).toISOString()), profissional_id: pid, inicio: toIsoLocal(s, offset), fim: toIsoLocal(e, offset), inicio_ms: s, rotulo: rotulo(s, offset) });\n        }\n      }\n    }\n  }\n  return slots.sort((a, b) => a.inicio_ms - b.inicio_ms);\n}\nfunction periodoOk(slot, periodo, offset) {\n  if (!periodo) return true;\n  const h = local(slot.inicio_ms, offset).getUTCHours();\n  return periodo === 'manha' ? h < 12 : periodo === 'tarde' ? h >= 12 && h < 18 : periodo === 'noite' ? h >= 18 : true;\n}\n// Duas opções: a primeira disponível e a próxima em outro dia (ou, se não houver, ≥ 2h depois).\nfunction escolherDuas(slots, { periodo, urgencia, offset }) {\n  const lista = slots.filter(s => periodoOk(s, periodo, offset));\n  if (lista.length <= 2) return lista;\n  const a = lista[0];\n  if (urgencia) return [a, lista.find(s => s !== a && s.inicio_ms >= a.inicio_ms + 3600000) || lista[1]];\n  const dia = s => local(s.inicio_ms, offset).getUTCDate();\n  const b = lista.find(s => dia(s) !== dia(a)) || lista.find(s => s.inicio_ms >= a.inicio_ms + 7200000) || lista[1];\n  return [a, b];\n}\n\n// ---- lib/reminders.js ----\nconst MAX_TENTATIVAS = 3;\n\nfunction intervaloAmanha(agoraMs, offset) {\n  const l = new Date(agoraMs + offset * 60000);\n  const hoje0 = Date.UTC(l.getUTCFullYear(), l.getUTCMonth(), l.getUTCDate()) - offset * 60000;\n  const ini = hoje0 + 86400000, fim = ini + 86400000;\n  return { timeMin: new Date(ini).toISOString(), timeMax: new Date(fim).toISOString(), iniMs: ini };\n}\n// events: itens da Calendar API (events.list com singleEvents=true)\nfunction candidatos(events, offset) {\n  const out = [];\n  for (const ev of events || []) {\n    const p = (ev.extendedProperties && ev.extendedProperties.private) || {};\n    if (p.clinica !== 'vamos-sorrir' || ev.status === 'cancelled' || !p.telefone || !ev.start || !ev.start.dateTime) continue;\n    const ms = Date.parse(ev.start.dateTime), { data, hora } = dataHoraTexto(ms, offset);\n    out.push({ chave: `${ev.id}:D-1`, evento_id: ev.id, telefone: p.telefone, telefone_hash: p.telefone_hash || '', nome: p.nome_paciente || '', data, hora, inicio_ms: ms });\n  }\n  return out;\n}\n// log: linhas da aba Lembretes. Regras anti-duplicidade:\n//  ENVIADO -> nunca reenviar | FALHOU com tentativas < MAX -> reenviar | ENVIANDO recente -> aguardar | ENVIANDO antigo -> NÃO reenviar (pode ter saído): revisão humana\nfunction filtrar(cands, log, agoraMs) {\n  const idx = new Map((log || []).map(r => [r.chave, r]));\n  const enviar = [], pular = [];\n  for (const c of cands) {\n    const r = idx.get(c.chave);\n    if (!r) { enviar.push({ ...c, tentativas: 0 }); continue; }\n    const t = Number(r.tentativas || 0);\n    if (r.status === 'ENVIADO') pular.push({ chave: c.chave, motivo: 'ja_enviado' });\n    else if (r.status === 'FALHOU' && t < MAX_TENTATIVAS) enviar.push({ ...c, tentativas: t });\n    else if (r.status === 'FALHOU') pular.push({ chave: c.chave, motivo: 'maximo_tentativas' });\n    else if (r.status === 'ENVIANDO') pular.push({ chave: c.chave, motivo: (agoraMs - Date.parse(r.atualizado_em)) > 30 * 60000 ? 'envio_incerto_revisar' : 'em_andamento' });\n    else pular.push({ chave: c.chave, motivo: 'status_desconhecido' });\n  }\n  return { enviar, pular };\n}\nfunction parametrosTemplate(c, cfg) { return [String(c.nome || '').split(' ')[0] || 'paciente', c.data, c.hora, cfg.clinica.nome]; }\n\n// ---- nó: Montar candidatos ----\nconst cfg = carregarConfig($env.CLINICA_CONFIG_JSON);\nconst itens = $input.all(), falhas = itens.filter(i => i.json.error).length;\nif (falhas === itens.length) throw new Error('Google Agenda indisponível: lembretes não puderam ser calculados');\nconst eventos = itens.flatMap(i => i.json.items || []);\nreturn [{ json: { candidatos: candidatos(eventos, cfg.agenda.fuso_offset_minutos), agendas_com_falha: falhas } }];"
+      },
+      "id": "8234e503-1879-4769-acba-97d68fff2a00",
+      "name": "Montar candidatos",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1300,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "sheet",
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $env.SHEETS_ID }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Lembretes",
+          "mode": "name"
+        },
+        "options": {}
+      },
+      "id": "0efe2bc3-6976-4ab5-aa02-4b08fcc2a98f",
+      "name": "Ler log de lembretes",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        0,
+        220
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "",
+          "name": "Google Sheets - Vamos Sorrir"
+        }
+      },
+      "alwaysOutputData": true,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "// ---- lib/util.js ----\n// Utilitários compartilhados. Nos workflows n8n este arquivo é inlinado em cada Code node.\nconst crypto = require('crypto'); // exige NODE_FUNCTION_ALLOW_BUILTIN=crypto no n8n\n\nfunction sha256(s) { return crypto.createHash('sha256').update(String(s)).digest('hex'); }\nfunction hmacSha256(secret, data) { return crypto.createHmac('sha256', secret).update(data).digest('hex'); }\nfunction stripAccents(s) { return String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, ''); }\nfunction norm(s) { return stripAccents(s).toLowerCase().replace(/\\s+/g, ' ').trim(); }\n\n// Normaliza para dígitos com DDI (Brasil por padrão). WhatsApp envia \"5511999999999\".\nfunction normalizePhone(raw) {\n  let d = String(raw || '').replace(/\\D/g, '');\n  if (!d) return '';\n  if (d.startsWith('00')) d = d.slice(2);\n  if (d.length === 10 || d.length === 11) d = '55' + d;\n  // Número móvel BR antigo sem o 9: 55 + DDD + 8 dígitos\n  if (d.length === 12 && d.startsWith('55') && /^[6-9]/.test(d.slice(4))) d = d.slice(0, 4) + '9' + d.slice(4);\n  return d;\n}\nfunction maskPhone(p) { const d = String(p || ''); return d.length > 6 ? d.slice(0, 4) + '*****' + d.slice(-2) : '***'; }\nfunction phoneHash(p) { return sha256('tel:' + normalizePhone(p)).slice(0, 16); }\n\n// Evita injeção de fórmulas em planilhas (=, +, -, @).\nfunction sanitizeCell(v) {\n  if (v === null || v === undefined) return '';\n  const s = String(v);\n  return /^[=+\\-@\\t\\r]/.test(s) ? \"'\" + s : s;\n}\n\n// ---- lib/config.js ----\n// Configuração da clínica: nada é inventado; campos pendentes bloqueiam o atendimento.\nconst PENDENTE = '__PREENCHER__';\nconst OBRIGATORIOS = [\n  'clinica.nome', 'clinica.endereco', 'clinica.telefone', 'clinica.maps_link',\n  'privacidade.politica_url', 'privacidade.contato_encarregado',\n  'equipe.whatsapp_alertas', 'whatsapp.templates.lembrete', 'whatsapp.templates.alerta_equipe',\n  'agenda.fuso_offset_minutos', 'agenda.horario_funcionamento',\n];\nfunction get(obj, path) { return path.split('.').reduce((o, k) => (o == null ? undefined : o[k]), obj); }\nfunction vazio(v) {\n  return v === undefined || v === null || v === '' || (typeof v === 'string' && v.includes(PENDENTE)) ||\n    (Array.isArray(v) && v.length === 0) || (typeof v === 'object' && !Array.isArray(v) && Object.keys(v).length === 0);\n}\nfunction carregarConfig(json) {\n  try { return JSON.parse(json); } catch (e) { return null; }\n}\nfunction validarConfig(cfg) {\n  if (!cfg) return { ok: false, faltando: ['CLINICA_CONFIG_JSON inválido ou ausente'] };\n  const faltando = OBRIGATORIOS.filter(p => vazio(get(cfg, p)));\n  const profs = cfg.profissionais || [];\n  if (!profs.length) faltando.push('profissionais');\n  profs.forEach((p, i) => ['id', 'nome', 'calendar_id'].forEach(k => { if (vazio(p[k])) faltando.push(`profissionais[${i}].${k}`); }));\n  const servs = cfg.servicos || [];\n  if (!servs.length) faltando.push('servicos');\n  servs.forEach((s, i) => {\n    ['codigo', 'nome'].forEach(k => { if (vazio(s[k])) faltando.push(`servicos[${i}].${k}`); });\n    if (s.agendavel_online !== false && !(s.duracao_min > 0)) faltando.push(`servicos[${i}].duracao_min`);\n    if (s.agendavel_online !== false && !(s.profissional_ids || []).length) faltando.push(`servicos[${i}].profissional_ids`);\n  });\n  return { ok: faltando.length === 0, faltando };\n}\nfunction servico(cfg, codigo) { return (cfg.servicos || []).find(s => s.codigo === codigo); }\nfunction profissional(cfg, id) { return (cfg.profissionais || []).find(p => p.id === id); }\n// Texto que o agente pode usar sobre a clínica (somente o que está configurado).\nfunction infoClinica(cfg, topico) {\n  const c = cfg.clinica || {};\n  const nd = 'Informação não configurada pela clínica. Não invente: ofereça encaminhar para a equipe.';\n  const val = v => (vazio(v) ? nd : v);\n  switch (topico) {\n    case 'endereco': return { endereco: val(c.endereco), maps_link: val(c.maps_link) };\n    case 'telefone': return { telefone: val(c.telefone) };\n    case 'horario_funcionamento': return { horario: val(cfg.agenda && cfg.agenda.horario_funcionamento_texto) };\n    case 'profissionais': return { profissionais: (cfg.profissionais || []).filter(p => !vazio(p.nome)).map(p => ({ id: p.id, nome: p.nome, especialidade: vazio(p.especialidade) ? undefined : p.especialidade })) };\n    case 'servicos': return { servicos: (cfg.servicos || []).map(s => ({ codigo: s.codigo, nome: s.nome, agendavel_online: s.agendavel_online !== false, descricao: vazio(s.descricao) ? undefined : s.descricao })) };\n    case 'precos': return { precos: (cfg.servicos || []).filter(s => !vazio(s.preco_texto)).map(s => ({ servico: s.nome, preco: s.preco_texto })), observacao: 'Se o serviço não aparece aqui, o preço não foi informado: não invente, ofereça avaliação ou equipe.' };\n    case 'formas_pagamento': return { formas_pagamento: val(c.formas_pagamento) };\n    case 'orientacoes_consulta': return { orientacoes: val(cfg.agenda && cfg.agenda.orientacoes_consulta) };\n    default: return { erro: 'topico_desconhecido', topicos: ['endereco', 'telefone', 'horario_funcionamento', 'profissionais', 'servicos', 'precos', 'formas_pagamento', 'orientacoes_consulta'] };\n  }\n}\n\n// ---- lib/slots.js ----\nconst DIAS = ['domingo', 'segunda-feira', 'terça-feira', 'quarta-feira', 'quinta-feira', 'sexta-feira', 'sábado'];\nconst p2 = n => String(n).padStart(2, '0');\n// \"Relógio local\" = UTC deslocado pelo offset fixo da clínica (Brasil sem horário de verão: -180).\nfunction local(ms, off) { return new Date(ms + off * 60000); }\nfunction hm(s) { const [h, m] = s.split(':').map(Number); return h * 60 + m; }\nfunction toIsoLocal(ms, off) {\n  const d = local(ms, off), s = off <= 0 ? '-' : '+', a = Math.abs(off);\n  return `${d.getUTCFullYear()}-${p2(d.getUTCMonth() + 1)}-${p2(d.getUTCDate())}T${p2(d.getUTCHours())}:${p2(d.getUTCMinutes())}:00${s}${p2(Math.floor(a / 60))}:${p2(a % 60)}`;\n}\nfunction rotulo(startMs, off) {\n  const d = local(startMs, off);\n  return `${DIAS[d.getUTCDay()]}, ${p2(d.getUTCDate())}/${p2(d.getUTCMonth() + 1)} às ${p2(d.getUTCHours())}:${p2(d.getUTCMinutes())}`;\n}\nfunction dataHoraTexto(startMs, off) {\n  const d = local(startMs, off);\n  return { data: `${p2(d.getUTCDate())}/${p2(d.getUTCMonth() + 1)}/${d.getUTCFullYear()} (${DIAS[d.getUTCDay()]})`, hora: `${p2(d.getUTCHours())}:${p2(d.getUTCMinutes())}` };\n}\nfunction slotId(profId, startIso) { return sha256(`${profId}|${new Date(startIso).toISOString()}`).slice(0, 12); }\n\n// busy: { [profissional_id]: [{start, end}] }  (ISO)  |  horario: {\"1\":[[\"08:00\",\"12:00\"]],...}  (0=domingo)\nfunction calcularSlots({ busy, profissionalIds, horario, feriados = [], duracaoMin, passoMin = 30, deMs, ateMs, offset, antecedenciaMin = 120, agoraMs }) {\n  const slots = [], minStart = agoraMs + antecedenciaMin * 60000;\n  const dia0 = Math.floor(local(deMs, offset).getTime() / 86400000) * 86400000 - offset * 60000; // 00:00 local do primeiro dia, em UTC ms\n  for (let dayMs = dia0; dayMs < ateMs; dayMs += 86400000) {\n    const l = local(dayMs, offset), dow = String(l.getUTCDay());\n    const isoDia = `${l.getUTCFullYear()}-${p2(l.getUTCMonth() + 1)}-${p2(l.getUTCDate())}`;\n    if (feriados.includes(isoDia)) continue;\n    for (const [ini, fim] of horario[dow] || []) {\n      for (let m = hm(ini); m + duracaoMin <= hm(fim); m += passoMin) {\n        const s = dayMs + m * 60000, e = s + duracaoMin * 60000;\n        if (s < minStart || s < deMs || e > ateMs) continue;\n        for (const pid of profissionalIds) {\n          const ocupado = (busy[pid] || []).some(b => Date.parse(b.start) < e && Date.parse(b.end) > s);\n          if (!ocupado) slots.push({ slot_id: slotId(pid, new Date(s).toISOString()), profissional_id: pid, inicio: toIsoLocal(s, offset), fim: toIsoLocal(e, offset), inicio_ms: s, rotulo: rotulo(s, offset) });\n        }\n      }\n    }\n  }\n  return slots.sort((a, b) => a.inicio_ms - b.inicio_ms);\n}\nfunction periodoOk(slot, periodo, offset) {\n  if (!periodo) return true;\n  const h = local(slot.inicio_ms, offset).getUTCHours();\n  return periodo === 'manha' ? h < 12 : periodo === 'tarde' ? h >= 12 && h < 18 : periodo === 'noite' ? h >= 18 : true;\n}\n// Duas opções: a primeira disponível e a próxima em outro dia (ou, se não houver, ≥ 2h depois).\nfunction escolherDuas(slots, { periodo, urgencia, offset }) {\n  const lista = slots.filter(s => periodoOk(s, periodo, offset));\n  if (lista.length <= 2) return lista;\n  const a = lista[0];\n  if (urgencia) return [a, lista.find(s => s !== a && s.inicio_ms >= a.inicio_ms + 3600000) || lista[1]];\n  const dia = s => local(s.inicio_ms, offset).getUTCDate();\n  const b = lista.find(s => dia(s) !== dia(a)) || lista.find(s => s.inicio_ms >= a.inicio_ms + 7200000) || lista[1];\n  return [a, b];\n}\n\n// ---- lib/reminders.js ----\nconst MAX_TENTATIVAS = 3;\n\nfunction intervaloAmanha(agoraMs, offset) {\n  const l = new Date(agoraMs + offset * 60000);\n  const hoje0 = Date.UTC(l.getUTCFullYear(), l.getUTCMonth(), l.getUTCDate()) - offset * 60000;\n  const ini = hoje0 + 86400000, fim = ini + 86400000;\n  return { timeMin: new Date(ini).toISOString(), timeMax: new Date(fim).toISOString(), iniMs: ini };\n}\n// events: itens da Calendar API (events.list com singleEvents=true)\nfunction candidatos(events, offset) {\n  const out = [];\n  for (const ev of events || []) {\n    const p = (ev.extendedProperties && ev.extendedProperties.private) || {};\n    if (p.clinica !== 'vamos-sorrir' || ev.status === 'cancelled' || !p.telefone || !ev.start || !ev.start.dateTime) continue;\n    const ms = Date.parse(ev.start.dateTime), { data, hora } = dataHoraTexto(ms, offset);\n    out.push({ chave: `${ev.id}:D-1`, evento_id: ev.id, telefone: p.telefone, telefone_hash: p.telefone_hash || '', nome: p.nome_paciente || '', data, hora, inicio_ms: ms });\n  }\n  return out;\n}\n// log: linhas da aba Lembretes. Regras anti-duplicidade:\n//  ENVIADO -> nunca reenviar | FALHOU com tentativas < MAX -> reenviar | ENVIANDO recente -> aguardar | ENVIANDO antigo -> NÃO reenviar (pode ter saído): revisão humana\nfunction filtrar(cands, log, agoraMs) {\n  const idx = new Map((log || []).map(r => [r.chave, r]));\n  const enviar = [], pular = [];\n  for (const c of cands) {\n    const r = idx.get(c.chave);\n    if (!r) { enviar.push({ ...c, tentativas: 0 }); continue; }\n    const t = Number(r.tentativas || 0);\n    if (r.status === 'ENVIADO') pular.push({ chave: c.chave, motivo: 'ja_enviado' });\n    else if (r.status === 'FALHOU' && t < MAX_TENTATIVAS) enviar.push({ ...c, tentativas: t });\n    else if (r.status === 'FALHOU') pular.push({ chave: c.chave, motivo: 'maximo_tentativas' });\n    else if (r.status === 'ENVIANDO') pular.push({ chave: c.chave, motivo: (agoraMs - Date.parse(r.atualizado_em)) > 30 * 60000 ? 'envio_incerto_revisar' : 'em_andamento' });\n    else pular.push({ chave: c.chave, motivo: 'status_desconhecido' });\n  }\n  return { enviar, pular };\n}\nfunction parametrosTemplate(c, cfg) { return [String(c.nome || '').split(' ')[0] || 'paciente', c.data, c.hora, cfg.clinica.nome]; }\n\n// ---- nó: Filtrar (deduplicação) ----\nconst cfg = carregarConfig($env.CLINICA_CONFIG_JSON);\nconst base = $('Montar candidatos').first().json;\nconst log = $input.all().map(i => i.json).filter(r => r.chave);\nconst { enviar, pular } = filtrar(base.candidatos, log, Date.now());\nreturn enviar.map(c => ({ json: { candidato: c, parametros: parametrosTemplate(c, cfg) } }));"
+      },
+      "id": "351e8685-212c-4a42-ad68-0b0276172ecd",
+      "name": "Filtrar (deduplicação)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        260,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "__WF:09b__",
+          "mode": "id"
+        },
+        "options": {
+          "waitForSubWorkflow": true
+        },
+        "mode": "each"
+      },
+      "id": "657b4920-f696-4a7b-a3d1-fef7823f2f63",
+      "name": "Enviar lembrete (09b)",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.1,
+      "position": [
+        520,
+        220
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "// ---- lib/util.js ----\n// Utilitários compartilhados. Nos workflows n8n este arquivo é inlinado em cada Code node.\nconst crypto = require('crypto'); // exige NODE_FUNCTION_ALLOW_BUILTIN=crypto no n8n\n\nfunction sha256(s) { return crypto.createHash('sha256').update(String(s)).digest('hex'); }\nfunction hmacSha256(secret, data) { return crypto.createHmac('sha256', secret).update(data).digest('hex'); }\nfunction stripAccents(s) { return String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, ''); }\nfunction norm(s) { return stripAccents(s).toLowerCase().replace(/\\s+/g, ' ').trim(); }\n\n// Normaliza para dígitos com DDI (Brasil por padrão). WhatsApp envia \"5511999999999\".\nfunction normalizePhone(raw) {\n  let d = String(raw || '').replace(/\\D/g, '');\n  if (!d) return '';\n  if (d.startsWith('00')) d = d.slice(2);\n  if (d.length === 10 || d.length === 11) d = '55' + d;\n  // Número móvel BR antigo sem o 9: 55 + DDD + 8 dígitos\n  if (d.length === 12 && d.startsWith('55') && /^[6-9]/.test(d.slice(4))) d = d.slice(0, 4) + '9' + d.slice(4);\n  return d;\n}\nfunction maskPhone(p) { const d = String(p || ''); return d.length > 6 ? d.slice(0, 4) + '*****' + d.slice(-2) : '***'; }\nfunction phoneHash(p) { return sha256('tel:' + normalizePhone(p)).slice(0, 16); }\n\n// Evita injeção de fórmulas em planilhas (=, +, -, @).\nfunction sanitizeCell(v) {\n  if (v === null || v === undefined) return '';\n  const s = String(v);\n  return /^[=+\\-@\\t\\r]/.test(s) ? \"'\" + s : s;\n}\n\n// ---- nó: Resumo da execução ----\n\nconst itens = $input.all().map(i => i.json), enviados = itens.filter(i => i.enviado).length;\nreturn [{ json: { op: 'auditoria', dados: { evento: 'lembretes_executados', detalhe: 'enviados=' + enviados + ' falhas=' + (itens.length - enviados) }, _ctx: {} } }];"
+      },
+      "id": "0c680ccd-d95d-40dc-abdd-075e53340141",
+      "name": "Resumo da execução",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        780,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "__WF:07__",
+          "mode": "id"
+        },
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "id": "8097c788-8dc2-499d-aded-653a7266e9a5",
+      "name": "Auditar execução (07)",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.1,
+      "position": [
+        1040,
+        220
+      ],
+      "onError": "continueRegularOutput"
+    }
+  ],
+  "connections": {
+    "Todos os dias às 9h": {
+      "main": [
+        [
+          {
+            "node": "Preparar janela de amanhã",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reprocessar falhas às 12h": {
+      "main": [
+        [
+          {
+            "node": "Preparar janela de amanhã",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execução manual (teste)": {
+      "main": [
+        [
+          {
+            "node": "Preparar janela de amanhã",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Preparar janela de amanhã": {
+      "main": [
+        [
+          {
+            "node": "Google Agenda - eventos de amanhã",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Agenda - eventos de amanhã": {
+      "main": [
+        [
+          {
+            "node": "Montar candidatos",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Montar candidatos": {
+      "main": [
+        [
+          {
+            "node": "Ler log de lembretes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ler log de lembretes": {
+      "main": [
+        [
+          {
+            "node": "Filtrar (deduplicação)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filtrar (deduplicação)": {
+      "main": [
+        [
+          {
+            "node": "Enviar lembrete (09b)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Enviar lembrete (09b)": {
+      "main": [
+        [
+          {
+            "node": "Resumo da execução",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resumo da execução": {
+      "main": [
+        [
+          {
+            "node": "Auditar execução (07)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "America/Sao_Paulo",
+    "saveManualExecutions": false,
+    "saveDataSuccessExecution": "none",
+    "saveDataErrorExecution": "none",
+    "saveExecutionProgress": false,
+    "errorWorkflow": "__WF:10__"
+  },
+  "active": false,
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "_id_logico": "09"
+}

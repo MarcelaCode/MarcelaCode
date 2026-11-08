@@ -1,0 +1,303 @@
+{
+  "name": "09b - Enviar lembrete individual",
+  "nodes": [
+    {
+      "parameters": {
+        "inputSource": "passthrough"
+      },
+      "id": "4d779cc4-4daf-49c5-a849-87d0cf4f073a",
+      "name": "Entrada",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "// ---- lib/util.js ----\n// Utilitários compartilhados. Nos workflows n8n este arquivo é inlinado em cada Code node.\nconst crypto = require('crypto'); // exige NODE_FUNCTION_ALLOW_BUILTIN=crypto no n8n\n\nfunction sha256(s) { return crypto.createHash('sha256').update(String(s)).digest('hex'); }\nfunction hmacSha256(secret, data) { return crypto.createHmac('sha256', secret).update(data).digest('hex'); }\nfunction stripAccents(s) { return String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, ''); }\nfunction norm(s) { return stripAccents(s).toLowerCase().replace(/\\s+/g, ' ').trim(); }\n\n// Normaliza para dígitos com DDI (Brasil por padrão). WhatsApp envia \"5511999999999\".\nfunction normalizePhone(raw) {\n  let d = String(raw || '').replace(/\\D/g, '');\n  if (!d) return '';\n  if (d.startsWith('00')) d = d.slice(2);\n  if (d.length === 10 || d.length === 11) d = '55' + d;\n  // Número móvel BR antigo sem o 9: 55 + DDD + 8 dígitos\n  if (d.length === 12 && d.startsWith('55') && /^[6-9]/.test(d.slice(4))) d = d.slice(0, 4) + '9' + d.slice(4);\n  return d;\n}\nfunction maskPhone(p) { const d = String(p || ''); return d.length > 6 ? d.slice(0, 4) + '*****' + d.slice(-2) : '***'; }\nfunction phoneHash(p) { return sha256('tel:' + normalizePhone(p)).slice(0, 16); }\n\n// Evita injeção de fórmulas em planilhas (=, +, -, @).\nfunction sanitizeCell(v) {\n  if (v === null || v === undefined) return '';\n  const s = String(v);\n  return /^[=+\\-@\\t\\r]/.test(s) ? \"'\" + s : s;\n}\n\n// ---- nó: Reservar envio ----\n\nconst c = $input.first().json.candidato;\nreturn [{ json: { op: 'lembrete', dados: { chave: c.chave, evento_id: c.evento_id, telefone_hash: phoneHash(c.telefone), status: 'ENVIANDO', tentativas: (c.tentativas || 0) + 1, novo: !c.tentativas }, _ctx: {} } }];"
+      },
+      "id": "c71f7462-c106-45a2-af85-d017dff1be7c",
+      "name": "Reservar envio",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        260,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "__WF:07__",
+          "mode": "id"
+        },
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "id": "6f94cf07-5c97-48ca-a482-d840b0fb79c9",
+      "name": "Gravar reserva (07)",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.1,
+      "position": [
+        520,
+        0
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "c1ce5b85-d912-4de6-ade0-9c9e2e8e2ac9",
+              "leftValue": "={{ $json.ok === true }}",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "f7e8e298-a41b-425c-aa3d-f98ad848b6fc",
+      "name": "Reserva gravada?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        780,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "// ---- lib/util.js ----\n// Utilitários compartilhados. Nos workflows n8n este arquivo é inlinado em cada Code node.\nconst crypto = require('crypto'); // exige NODE_FUNCTION_ALLOW_BUILTIN=crypto no n8n\n\nfunction sha256(s) { return crypto.createHash('sha256').update(String(s)).digest('hex'); }\nfunction hmacSha256(secret, data) { return crypto.createHmac('sha256', secret).update(data).digest('hex'); }\nfunction stripAccents(s) { return String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, ''); }\nfunction norm(s) { return stripAccents(s).toLowerCase().replace(/\\s+/g, ' ').trim(); }\n\n// Normaliza para dígitos com DDI (Brasil por padrão). WhatsApp envia \"5511999999999\".\nfunction normalizePhone(raw) {\n  let d = String(raw || '').replace(/\\D/g, '');\n  if (!d) return '';\n  if (d.startsWith('00')) d = d.slice(2);\n  if (d.length === 10 || d.length === 11) d = '55' + d;\n  // Número móvel BR antigo sem o 9: 55 + DDD + 8 dígitos\n  if (d.length === 12 && d.startsWith('55') && /^[6-9]/.test(d.slice(4))) d = d.slice(0, 4) + '9' + d.slice(4);\n  return d;\n}\nfunction maskPhone(p) { const d = String(p || ''); return d.length > 6 ? d.slice(0, 4) + '*****' + d.slice(-2) : '***'; }\nfunction phoneHash(p) { return sha256('tel:' + normalizePhone(p)).slice(0, 16); }\n\n// Evita injeção de fórmulas em planilhas (=, +, -, @).\nfunction sanitizeCell(v) {\n  if (v === null || v === undefined) return '';\n  const s = String(v);\n  return /^[=+\\-@\\t\\r]/.test(s) ? \"'\" + s : s;\n}\n\n// ---- lib/config.js ----\n// Configuração da clínica: nada é inventado; campos pendentes bloqueiam o atendimento.\nconst PENDENTE = '__PREENCHER__';\nconst OBRIGATORIOS = [\n  'clinica.nome', 'clinica.endereco', 'clinica.telefone', 'clinica.maps_link',\n  'privacidade.politica_url', 'privacidade.contato_encarregado',\n  'equipe.whatsapp_alertas', 'whatsapp.templates.lembrete', 'whatsapp.templates.alerta_equipe',\n  'agenda.fuso_offset_minutos', 'agenda.horario_funcionamento',\n];\nfunction get(obj, path) { return path.split('.').reduce((o, k) => (o == null ? undefined : o[k]), obj); }\nfunction vazio(v) {\n  return v === undefined || v === null || v === '' || (typeof v === 'string' && v.includes(PENDENTE)) ||\n    (Array.isArray(v) && v.length === 0) || (typeof v === 'object' && !Array.isArray(v) && Object.keys(v).length === 0);\n}\nfunction carregarConfig(json) {\n  try { return JSON.parse(json); } catch (e) { return null; }\n}\nfunction validarConfig(cfg) {\n  if (!cfg) return { ok: false, faltando: ['CLINICA_CONFIG_JSON inválido ou ausente'] };\n  const faltando = OBRIGATORIOS.filter(p => vazio(get(cfg, p)));\n  const profs = cfg.profissionais || [];\n  if (!profs.length) faltando.push('profissionais');\n  profs.forEach((p, i) => ['id', 'nome', 'calendar_id'].forEach(k => { if (vazio(p[k])) faltando.push(`profissionais[${i}].${k}`); }));\n  const servs = cfg.servicos || [];\n  if (!servs.length) faltando.push('servicos');\n  servs.forEach((s, i) => {\n    ['codigo', 'nome'].forEach(k => { if (vazio(s[k])) faltando.push(`servicos[${i}].${k}`); });\n    if (s.agendavel_online !== false && !(s.duracao_min > 0)) faltando.push(`servicos[${i}].duracao_min`);\n    if (s.agendavel_online !== false && !(s.profissional_ids || []).length) faltando.push(`servicos[${i}].profissional_ids`);\n  });\n  return { ok: faltando.length === 0, faltando };\n}\nfunction servico(cfg, codigo) { return (cfg.servicos || []).find(s => s.codigo === codigo); }\nfunction profissional(cfg, id) { return (cfg.profissionais || []).find(p => p.id === id); }\n// Texto que o agente pode usar sobre a clínica (somente o que está configurado).\nfunction infoClinica(cfg, topico) {\n  const c = cfg.clinica || {};\n  const nd = 'Informação não configurada pela clínica. Não invente: ofereça encaminhar para a equipe.';\n  const val = v => (vazio(v) ? nd : v);\n  switch (topico) {\n    case 'endereco': return { endereco: val(c.endereco), maps_link: val(c.maps_link) };\n    case 'telefone': return { telefone: val(c.telefone) };\n    case 'horario_funcionamento': return { horario: val(cfg.agenda && cfg.agenda.horario_funcionamento_texto) };\n    case 'profissionais': return { profissionais: (cfg.profissionais || []).filter(p => !vazio(p.nome)).map(p => ({ id: p.id, nome: p.nome, especialidade: vazio(p.especialidade) ? undefined : p.especialidade })) };\n    case 'servicos': return { servicos: (cfg.servicos || []).map(s => ({ codigo: s.codigo, nome: s.nome, agendavel_online: s.agendavel_online !== false, descricao: vazio(s.descricao) ? undefined : s.descricao })) };\n    case 'precos': return { precos: (cfg.servicos || []).filter(s => !vazio(s.preco_texto)).map(s => ({ servico: s.nome, preco: s.preco_texto })), observacao: 'Se o serviço não aparece aqui, o preço não foi informado: não invente, ofereça avaliação ou equipe.' };\n    case 'formas_pagamento': return { formas_pagamento: val(c.formas_pagamento) };\n    case 'orientacoes_consulta': return { orientacoes: val(cfg.agenda && cfg.agenda.orientacoes_consulta) };\n    default: return { erro: 'topico_desconhecido', topicos: ['endereco', 'telefone', 'horario_funcionamento', 'profissionais', 'servicos', 'precos', 'formas_pagamento', 'orientacoes_consulta'] };\n  }\n}\n\n// ---- nó: Montar mensagem ----\nconst cfg = carregarConfig($env.CLINICA_CONFIG_JSON);\nconst e = $('Entrada').first().json;\nreturn [{ json: { telefone: e.candidato.telefone, ultimo_inbound_em: null, itens: [{ tipo: 'template', template: { nome: cfg.whatsapp.templates.lembrete, idioma: cfg.whatsapp.templates.idioma || 'pt_BR', parametros: e.parametros } }], _ctx: {} } }];"
+      },
+      "id": "5a9190d2-9e20-4658-af5c-611ff7d84ce3",
+      "name": "Montar mensagem",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1040,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "__WF:08__",
+          "mode": "id"
+        },
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "id": "a155aeb2-cad3-4d29-a310-233037a1bf25",
+      "name": "Enviar template (08)",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.1,
+      "position": [
+        1300,
+        0
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "// ---- lib/util.js ----\n// Utilitários compartilhados. Nos workflows n8n este arquivo é inlinado em cada Code node.\nconst crypto = require('crypto'); // exige NODE_FUNCTION_ALLOW_BUILTIN=crypto no n8n\n\nfunction sha256(s) { return crypto.createHash('sha256').update(String(s)).digest('hex'); }\nfunction hmacSha256(secret, data) { return crypto.createHmac('sha256', secret).update(data).digest('hex'); }\nfunction stripAccents(s) { return String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, ''); }\nfunction norm(s) { return stripAccents(s).toLowerCase().replace(/\\s+/g, ' ').trim(); }\n\n// Normaliza para dígitos com DDI (Brasil por padrão). WhatsApp envia \"5511999999999\".\nfunction normalizePhone(raw) {\n  let d = String(raw || '').replace(/\\D/g, '');\n  if (!d) return '';\n  if (d.startsWith('00')) d = d.slice(2);\n  if (d.length === 10 || d.length === 11) d = '55' + d;\n  // Número móvel BR antigo sem o 9: 55 + DDD + 8 dígitos\n  if (d.length === 12 && d.startsWith('55') && /^[6-9]/.test(d.slice(4))) d = d.slice(0, 4) + '9' + d.slice(4);\n  return d;\n}\nfunction maskPhone(p) { const d = String(p || ''); return d.length > 6 ? d.slice(0, 4) + '*****' + d.slice(-2) : '***'; }\nfunction phoneHash(p) { return sha256('tel:' + normalizePhone(p)).slice(0, 16); }\n\n// Evita injeção de fórmulas em planilhas (=, +, -, @).\nfunction sanitizeCell(v) {\n  if (v === null || v === undefined) return '';\n  const s = String(v);\n  return /^[=+\\-@\\t\\r]/.test(s) ? \"'\" + s : s;\n}\n\n// ---- nó: Montar resultado ----\n\nconst e = $('Entrada').first().json, c = e.candidato, r = $input.first().json, ok = r.ok === true;\nreturn [{ json: { op: 'lembrete', dados: { chave: c.chave, status: ok ? 'ENVIADO' : 'FALHOU', tentativas: (c.tentativas || 0) + 1, wamid_envio: (r.wamids || [])[0] || '' }, _ctx: {} } }];"
+      },
+      "id": "efc21ecf-8f61-46f8-a410-25f8b5b88287",
+      "name": "Montar resultado",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        0,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "__WF:07__",
+          "mode": "id"
+        },
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "id": "facf8d5c-010d-44cb-a626-01071cfa2b95",
+      "name": "Gravar resultado (07)",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.1,
+      "position": [
+        260,
+        220
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "// ---- lib/util.js ----\n// Utilitários compartilhados. Nos workflows n8n este arquivo é inlinado em cada Code node.\nconst crypto = require('crypto'); // exige NODE_FUNCTION_ALLOW_BUILTIN=crypto no n8n\n\nfunction sha256(s) { return crypto.createHash('sha256').update(String(s)).digest('hex'); }\nfunction hmacSha256(secret, data) { return crypto.createHmac('sha256', secret).update(data).digest('hex'); }\nfunction stripAccents(s) { return String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, ''); }\nfunction norm(s) { return stripAccents(s).toLowerCase().replace(/\\s+/g, ' ').trim(); }\n\n// Normaliza para dígitos com DDI (Brasil por padrão). WhatsApp envia \"5511999999999\".\nfunction normalizePhone(raw) {\n  let d = String(raw || '').replace(/\\D/g, '');\n  if (!d) return '';\n  if (d.startsWith('00')) d = d.slice(2);\n  if (d.length === 10 || d.length === 11) d = '55' + d;\n  // Número móvel BR antigo sem o 9: 55 + DDD + 8 dígitos\n  if (d.length === 12 && d.startsWith('55') && /^[6-9]/.test(d.slice(4))) d = d.slice(0, 4) + '9' + d.slice(4);\n  return d;\n}\nfunction maskPhone(p) { const d = String(p || ''); return d.length > 6 ? d.slice(0, 4) + '*****' + d.slice(-2) : '***'; }\nfunction phoneHash(p) { return sha256('tel:' + normalizePhone(p)).slice(0, 16); }\n\n// Evita injeção de fórmulas em planilhas (=, +, -, @).\nfunction sanitizeCell(v) {\n  if (v === null || v === undefined) return '';\n  const s = String(v);\n  return /^[=+\\-@\\t\\r]/.test(s) ? \"'\" + s : s;\n}\n\n// ---- nó: Fim ----\nconst d = $('Montar resultado').first().json.dados; return [{ json: { ok: true, enviado: d.status === 'ENVIADO' } }];"
+      },
+      "id": "67ae5331-e909-42e7-ada3-db5dd3c3c623",
+      "name": "Fim",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        520,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "// ---- lib/util.js ----\n// Utilitários compartilhados. Nos workflows n8n este arquivo é inlinado em cada Code node.\nconst crypto = require('crypto'); // exige NODE_FUNCTION_ALLOW_BUILTIN=crypto no n8n\n\nfunction sha256(s) { return crypto.createHash('sha256').update(String(s)).digest('hex'); }\nfunction hmacSha256(secret, data) { return crypto.createHmac('sha256', secret).update(data).digest('hex'); }\nfunction stripAccents(s) { return String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, ''); }\nfunction norm(s) { return stripAccents(s).toLowerCase().replace(/\\s+/g, ' ').trim(); }\n\n// Normaliza para dígitos com DDI (Brasil por padrão). WhatsApp envia \"5511999999999\".\nfunction normalizePhone(raw) {\n  let d = String(raw || '').replace(/\\D/g, '');\n  if (!d) return '';\n  if (d.startsWith('00')) d = d.slice(2);\n  if (d.length === 10 || d.length === 11) d = '55' + d;\n  // Número móvel BR antigo sem o 9: 55 + DDD + 8 dígitos\n  if (d.length === 12 && d.startsWith('55') && /^[6-9]/.test(d.slice(4))) d = d.slice(0, 4) + '9' + d.slice(4);\n  return d;\n}\nfunction maskPhone(p) { const d = String(p || ''); return d.length > 6 ? d.slice(0, 4) + '*****' + d.slice(-2) : '***'; }\nfunction phoneHash(p) { return sha256('tel:' + normalizePhone(p)).slice(0, 16); }\n\n// Evita injeção de fórmulas em planilhas (=, +, -, @).\nfunction sanitizeCell(v) {\n  if (v === null || v === undefined) return '';\n  const s = String(v);\n  return /^[=+\\-@\\t\\r]/.test(s) ? \"'\" + s : s;\n}\n\n// ---- nó: Sem reserva (não envia) ----\nreturn [{ json: { ok: false, enviado: false, motivo: 'reserva_falhou' } }];"
+      },
+      "id": "ba510bb9-3e2d-4347-a5d4-d317190ee8d4",
+      "name": "Sem reserva (não envia)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        780,
+        220
+      ]
+    }
+  ],
+  "connections": {
+    "Entrada": {
+      "main": [
+        [
+          {
+            "node": "Reservar envio",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reservar envio": {
+      "main": [
+        [
+          {
+            "node": "Gravar reserva (07)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gravar reserva (07)": {
+      "main": [
+        [
+          {
+            "node": "Reserva gravada?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reserva gravada?": {
+      "main": [
+        [
+          {
+            "node": "Montar mensagem",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Sem reserva (não envia)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Montar mensagem": {
+      "main": [
+        [
+          {
+            "node": "Enviar template (08)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Enviar template (08)": {
+      "main": [
+        [
+          {
+            "node": "Montar resultado",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Montar resultado": {
+      "main": [
+        [
+          {
+            "node": "Gravar resultado (07)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gravar resultado (07)": {
+      "main": [
+        [
+          {
+            "node": "Fim",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "America/Sao_Paulo",
+    "saveManualExecutions": false,
+    "saveDataSuccessExecution": "none",
+    "saveDataErrorExecution": "none",
+    "saveExecutionProgress": false,
+    "errorWorkflow": "__WF:10__"
+  },
+  "active": false,
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "_id_logico": "09b"
+}

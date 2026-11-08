@@ -1,0 +1,206 @@
+{
+  "name": "08 - Resposta WhatsApp",
+  "nodes": [
+    {
+      "parameters": {
+        "inputSource": "passthrough"
+      },
+      "id": "9123a63d-a49e-455d-a4cd-677f22083bce",
+      "name": "Entrada",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "// ---- lib/util.js ----\n// Utilitários compartilhados. Nos workflows n8n este arquivo é inlinado em cada Code node.\nconst crypto = require('crypto'); // exige NODE_FUNCTION_ALLOW_BUILTIN=crypto no n8n\n\nfunction sha256(s) { return crypto.createHash('sha256').update(String(s)).digest('hex'); }\nfunction hmacSha256(secret, data) { return crypto.createHmac('sha256', secret).update(data).digest('hex'); }\nfunction stripAccents(s) { return String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, ''); }\nfunction norm(s) { return stripAccents(s).toLowerCase().replace(/\\s+/g, ' ').trim(); }\n\n// Normaliza para dígitos com DDI (Brasil por padrão). WhatsApp envia \"5511999999999\".\nfunction normalizePhone(raw) {\n  let d = String(raw || '').replace(/\\D/g, '');\n  if (!d) return '';\n  if (d.startsWith('00')) d = d.slice(2);\n  if (d.length === 10 || d.length === 11) d = '55' + d;\n  // Número móvel BR antigo sem o 9: 55 + DDD + 8 dígitos\n  if (d.length === 12 && d.startsWith('55') && /^[6-9]/.test(d.slice(4))) d = d.slice(0, 4) + '9' + d.slice(4);\n  return d;\n}\nfunction maskPhone(p) { const d = String(p || ''); return d.length > 6 ? d.slice(0, 4) + '*****' + d.slice(-2) : '***'; }\nfunction phoneHash(p) { return sha256('tel:' + normalizePhone(p)).slice(0, 16); }\n\n// Evita injeção de fórmulas em planilhas (=, +, -, @).\nfunction sanitizeCell(v) {\n  if (v === null || v === undefined) return '';\n  const s = String(v);\n  return /^[=+\\-@\\t\\r]/.test(s) ? \"'\" + s : s;\n}\n\n// ---- lib/whatsapp.js ----\nfunction safeEqual(a, b) {\n  if (a.length !== b.length) return false;\n  let r = 0;\n  for (let i = 0; i < a.length; i++) r |= a.charCodeAt(i) ^ b.charCodeAt(i);\n  return r === 0;\n}\n// header: \"sha256=<hex>\" (X-Hub-Signature-256), rawBody: string exato recebido\nfunction verifySignature(rawBody, header, appSecret) {\n  if (!rawBody || !header || !appSecret) return false;\n  const expected = 'sha256=' + hmacSha256(appSecret, rawBody);\n  return safeEqual(expected, String(header));\n}\n\n// Converte o payload da Cloud API em mensagens normalizadas. Ignora status de entrega.\nfunction parseWebhook(body) {\n  const out = { mensagens: [], status: [] };\n  for (const entry of (body && body.entry) || []) {\n    for (const ch of entry.changes || []) {\n      const v = ch.value || {};\n      const nomes = {};\n      for (const c of v.contacts || []) nomes[c.wa_id] = c.profile && c.profile.name;\n      for (const s of v.statuses || []) out.status.push({ wamid: s.id, status: s.status, para: s.recipient_id, erros: s.errors || null });\n      for (const m of v.messages || []) {\n        const base = {\n          wamid: m.id, telefone: normalizePhone(m.from), nome_contato: nomes[m.from] || '',\n          timestamp: m.timestamp ? new Date(Number(m.timestamp) * 1000).toISOString() : new Date().toISOString(),\n          tipo: m.type, texto: '', media_id: null,\n        };\n        if (m.type === 'text') base.texto = (m.text && m.text.body) || '';\n        else if (m.type === 'audio') { base.media_id = m.audio && m.audio.id; base.mime = m.audio && m.audio.mime_type; }\n        else if (m.type === 'button') base.texto = (m.button && (m.button.text || m.button.payload)) || '';\n        else if (m.type === 'interactive') {\n          const i = m.interactive || {};\n          base.texto = (i.button_reply && i.button_reply.title) || (i.list_reply && i.list_reply.title) || '';\n        }\n        out.mensagens.push(base);\n      }\n    }\n  }\n  return out;\n}\n// Tipo lógico para roteamento: texto | audio | nao_suportado\nfunction tipoLogico(m) {\n  if (['text', 'button', 'interactive'].includes(m.tipo) && m.texto) return 'texto';\n  if (m.tipo === 'audio' && m.media_id) return 'audio';\n  return 'nao_suportado';\n}\n// Janela de atendimento de 24h da Meta, contada a partir da última mensagem RECEBIDA do paciente.\nfunction janelaAberta(ultimoInboundIso, agoraMs) {\n  if (!ultimoInboundIso) return false;\n  const t = Date.parse(ultimoInboundIso);\n  if (Number.isNaN(t)) return false;\n  return (agoraMs - t) < 24 * 3600 * 1000 - 60 * 1000; // 1 min de margem\n}\nfunction dividirTexto(texto, max = 1000) {\n  const t = String(texto || '').trim();\n  if (t.length <= max) return t ? [t] : [];\n  const partes = []; let atual = '';\n  for (const par of t.split(/\\n{2,}/)) {\n    if ((atual + '\\n\\n' + par).length > max && atual) { partes.push(atual); atual = par; }\n    else atual = atual ? atual + '\\n\\n' + par : par;\n  }\n  if (atual) partes.push(atual);\n  return partes.flatMap(p => p.length <= max ? [p] : p.match(new RegExp('[\\\\s\\\\S]{1,' + max + '}', 'g')));\n}\n// item: {tipo:'texto'|'template'|'localizacao', texto, template:{nome, idioma, parametros[]}, localizacao:{lat,lng,nome,endereco}}\n// Regra Meta: texto livre só dentro da janela; fora dela exige template aprovado.\nfunction montarEnvio(item, para, janelaOk) {\n  if (item.tipo === 'texto' || item.tipo === 'localizacao') {\n    if (!janelaOk) return { erro: 'fora_da_janela_24h' };\n  }\n  const base = { messaging_product: 'whatsapp', recipient_type: 'individual', to: para };\n  if (item.tipo === 'texto') return { payload: { ...base, type: 'text', text: { preview_url: true, body: item.texto } } };\n  if (item.tipo === 'localizacao') {\n    const l = item.localizacao;\n    return { payload: { ...base, type: 'location', location: { latitude: l.lat, longitude: l.lng, name: l.nome, address: l.endereco } } };\n  }\n  if (item.tipo === 'template') {\n    const t = item.template;\n    if (!t || !t.nome) return { erro: 'template_sem_nome' };\n    return { payload: { ...base, type: 'template', template: {\n      name: t.nome, language: { code: t.idioma || 'pt_BR' },\n      components: (t.parametros && t.parametros.length) ? [{ type: 'body', parameters: t.parametros.map(p => ({ type: 'text', text: String(p).slice(0, 60) })) }] : [],\n    } } };\n  }\n  return { erro: 'tipo_invalido' };\n}\n\n// ---- nó: Preparar envios ----\n\nconst ent = $input.first().json, _ctx = ent._ctx, agora = Date.now();\nconst janela = janelaAberta(ent.ultimo_inbound_em, agora);\nconst out = [];\nfor (const it of (ent.itens || [])) {\n  const partes = it.tipo === 'texto' ? dividirTexto(it.texto).map(t => ({ tipo: 'texto', texto: t })) : [it];\n  for (const p of partes) {\n    const r = montarEnvio(p, ent.telefone, janela);\n    if (r.erro) return [{ json: { falha_previa: r.erro, _ctx } }];\n    out.push({ json: { payload: r.payload, _ctx } });\n  }\n}\nif (!out.length) return [{ json: { falha_previa: 'sem_itens', _ctx } }];\nreturn out;"
+      },
+      "id": "7f36b44c-106b-4768-ac1b-777b534d6094",
+      "name": "Preparar envios",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        260,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "54e2fc16-d585-4924-a251-9dfb2f490637",
+              "leftValue": "={{ !!$json.falha_previa }}",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "05d8a15c-de70-45e6-a3d9-ff4906cf9427",
+      "name": "Falha prévia?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        520,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://graph.facebook.com/{{ $env.WHATSAPP_API_VERSION }}/{{ $env.WHATSAPP_PHONE_NUMBER_ID }}/messages",
+        "options": {
+          "timeout": 30000,
+          "response": {
+            "response": {
+              "fullResponse": false,
+              "neverError": false
+            }
+          }
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.WHATSAPP_ACCESS_TOKEN }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.payload) }}"
+      },
+      "id": "2e714f51-f04e-4abf-a1ab-e82297daf7bd",
+      "name": "Enviar via WhatsApp Cloud API",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        780,
+        0
+      ],
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "// ---- lib/util.js ----\n// Utilitários compartilhados. Nos workflows n8n este arquivo é inlinado em cada Code node.\nconst crypto = require('crypto'); // exige NODE_FUNCTION_ALLOW_BUILTIN=crypto no n8n\n\nfunction sha256(s) { return crypto.createHash('sha256').update(String(s)).digest('hex'); }\nfunction hmacSha256(secret, data) { return crypto.createHmac('sha256', secret).update(data).digest('hex'); }\nfunction stripAccents(s) { return String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, ''); }\nfunction norm(s) { return stripAccents(s).toLowerCase().replace(/\\s+/g, ' ').trim(); }\n\n// Normaliza para dígitos com DDI (Brasil por padrão). WhatsApp envia \"5511999999999\".\nfunction normalizePhone(raw) {\n  let d = String(raw || '').replace(/\\D/g, '');\n  if (!d) return '';\n  if (d.startsWith('00')) d = d.slice(2);\n  if (d.length === 10 || d.length === 11) d = '55' + d;\n  // Número móvel BR antigo sem o 9: 55 + DDD + 8 dígitos\n  if (d.length === 12 && d.startsWith('55') && /^[6-9]/.test(d.slice(4))) d = d.slice(0, 4) + '9' + d.slice(4);\n  return d;\n}\nfunction maskPhone(p) { const d = String(p || ''); return d.length > 6 ? d.slice(0, 4) + '*****' + d.slice(-2) : '***'; }\nfunction phoneHash(p) { return sha256('tel:' + normalizePhone(p)).slice(0, 16); }\n\n// Evita injeção de fórmulas em planilhas (=, +, -, @).\nfunction sanitizeCell(v) {\n  if (v === null || v === undefined) return '';\n  const s = String(v);\n  return /^[=+\\-@\\t\\r]/.test(s) ? \"'\" + s : s;\n}\n\n// ---- nó: Resumo do envio ----\n\nconst esperado = $('Preparar envios').all().length, _ctx = $('Preparar envios').first().json._ctx;\nconst itens = $input.all();\nconst ids = itens.map(i => i.json && i.json.messages && i.json.messages[0] && i.json.messages[0].id).filter(Boolean);\nconst ok = ids.length === esperado;\nconst falha = itens.find(i => i.json && i.json.error);\nreturn [{ json: { ok, wamids: ids, erro: ok ? null : 'falha_envio_whatsapp', http_status: falha && falha.json.error && (falha.json.error.httpCode || null), _ctx } }];"
+      },
+      "id": "50c26343-7877-4401-af63-a1088414f93f",
+      "name": "Resumo do envio",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1040,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "// ---- lib/util.js ----\n// Utilitários compartilhados. Nos workflows n8n este arquivo é inlinado em cada Code node.\nconst crypto = require('crypto'); // exige NODE_FUNCTION_ALLOW_BUILTIN=crypto no n8n\n\nfunction sha256(s) { return crypto.createHash('sha256').update(String(s)).digest('hex'); }\nfunction hmacSha256(secret, data) { return crypto.createHmac('sha256', secret).update(data).digest('hex'); }\nfunction stripAccents(s) { return String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, ''); }\nfunction norm(s) { return stripAccents(s).toLowerCase().replace(/\\s+/g, ' ').trim(); }\n\n// Normaliza para dígitos com DDI (Brasil por padrão). WhatsApp envia \"5511999999999\".\nfunction normalizePhone(raw) {\n  let d = String(raw || '').replace(/\\D/g, '');\n  if (!d) return '';\n  if (d.startsWith('00')) d = d.slice(2);\n  if (d.length === 10 || d.length === 11) d = '55' + d;\n  // Número móvel BR antigo sem o 9: 55 + DDD + 8 dígitos\n  if (d.length === 12 && d.startsWith('55') && /^[6-9]/.test(d.slice(4))) d = d.slice(0, 4) + '9' + d.slice(4);\n  return d;\n}\nfunction maskPhone(p) { const d = String(p || ''); return d.length > 6 ? d.slice(0, 4) + '*****' + d.slice(-2) : '***'; }\nfunction phoneHash(p) { return sha256('tel:' + normalizePhone(p)).slice(0, 16); }\n\n// Evita injeção de fórmulas em planilhas (=, +, -, @).\nfunction sanitizeCell(v) {\n  if (v === null || v === undefined) return '';\n  const s = String(v);\n  return /^[=+\\-@\\t\\r]/.test(s) ? \"'\" + s : s;\n}\n\n// ---- nó: Resultado falha prévia ----\nconst p = $input.first().json; return [{ json: { ok: false, erro: p.falha_previa, _ctx: p._ctx } }];"
+      },
+      "id": "e8d5ad2e-d06f-4175-a19a-fb2f168d39bd",
+      "name": "Resultado falha prévia",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1300,
+        0
+      ]
+    }
+  ],
+  "connections": {
+    "Entrada": {
+      "main": [
+        [
+          {
+            "node": "Preparar envios",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Preparar envios": {
+      "main": [
+        [
+          {
+            "node": "Falha prévia?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Falha prévia?": {
+      "main": [
+        [
+          {
+            "node": "Resultado falha prévia",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Enviar via WhatsApp Cloud API",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Enviar via WhatsApp Cloud API": {
+      "main": [
+        [
+          {
+            "node": "Resumo do envio",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "America/Sao_Paulo",
+    "saveManualExecutions": false,
+    "saveDataSuccessExecution": "none",
+    "saveDataErrorExecution": "none",
+    "saveExecutionProgress": false,
+    "errorWorkflow": "__WF:10__"
+  },
+  "active": false,
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "_id_logico": "08"
+}

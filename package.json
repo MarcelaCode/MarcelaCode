@@ -1,0 +1,14 @@
+{
+  "name": "vamos-sorrir-agente",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Recepcionista virtual (WhatsApp + Claude + n8n) da clínica Vamos Sorrir",
+  "scripts": {
+    "test": "node --test \"test/*.test.js\"",
+    "build": "node tools/build-workflows.js",
+    "validate": "node tools/validate-workflows.js",
+    "check": "npm run build && npm run validate && npm test",
+    "env:config": "node tools/config-to-env.js"
+  },
+  "engines": { "node": ">=20" }
+}

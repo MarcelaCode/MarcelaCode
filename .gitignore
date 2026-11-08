@@ -1,0 +1,4 @@
+.env
+config/clinica.config.json
+node_modules/
+*.log

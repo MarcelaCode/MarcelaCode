@@ -1,0 +1,517 @@
+{
+  "name": "07 - Registro Planilha",
+  "nodes": [
+    {
+      "parameters": {
+        "inputSource": "passthrough"
+      },
+      "id": "d03020dd-3649-4b69-a5b0-0def7b3474ca",
+      "name": "Entrada",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "id": "2adc9b30-9235-431e-afef-5698ed60e90c",
+                    "leftValue": "={{ $json.op }}",
+                    "rightValue": "upsert_atendimento",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "upsert_atendimento"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "id": "d9123906-6c1a-439b-a1b2-0c8ccc07987a",
+                    "leftValue": "={{ $json.op }}",
+                    "rightValue": "lembrete",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "lembrete"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "id": "c94df54e-f7ff-4551-a702-0ae479f5c132",
+                    "leftValue": "={{ $json.op }}",
+                    "rightValue": "auditoria",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "auditoria"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "0fdb7043-d1d1-473e-a789-ed863b43cdbb",
+      "name": "Operação",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [
+        260,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "// ---- lib/util.js ----\n// Utilitários compartilhados. Nos workflows n8n este arquivo é inlinado em cada Code node.\nconst crypto = require('crypto'); // exige NODE_FUNCTION_ALLOW_BUILTIN=crypto no n8n\n\nfunction sha256(s) { return crypto.createHash('sha256').update(String(s)).digest('hex'); }\nfunction hmacSha256(secret, data) { return crypto.createHmac('sha256', secret).update(data).digest('hex'); }\nfunction stripAccents(s) { return String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, ''); }\nfunction norm(s) { return stripAccents(s).toLowerCase().replace(/\\s+/g, ' ').trim(); }\n\n// Normaliza para dígitos com DDI (Brasil por padrão). WhatsApp envia \"5511999999999\".\nfunction normalizePhone(raw) {\n  let d = String(raw || '').replace(/\\D/g, '');\n  if (!d) return '';\n  if (d.startsWith('00')) d = d.slice(2);\n  if (d.length === 10 || d.length === 11) d = '55' + d;\n  // Número móvel BR antigo sem o 9: 55 + DDD + 8 dígitos\n  if (d.length === 12 && d.startsWith('55') && /^[6-9]/.test(d.slice(4))) d = d.slice(0, 4) + '9' + d.slice(4);\n  return d;\n}\nfunction maskPhone(p) { const d = String(p || ''); return d.length > 6 ? d.slice(0, 4) + '*****' + d.slice(-2) : '***'; }\nfunction phoneHash(p) { return sha256('tel:' + normalizePhone(p)).slice(0, 16); }\n\n// Evita injeção de fórmulas em planilhas (=, +, -, @).\nfunction sanitizeCell(v) {\n  if (v === null || v === undefined) return '';\n  const s = String(v);\n  return /^[=+\\-@\\t\\r]/.test(s) ? \"'\" + s : s;\n}\n\n// ---- nó: Chave do atendimento ----\nconst e = $input.first().json; return [{ json: { id_atendimento: e.dados.id_atendimento } }];"
+      },
+      "id": "a564164f-bf12-4995-a45b-4ac9d5e7e578",
+      "name": "Chave do atendimento",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        520,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "sheet",
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $env.SHEETS_ID }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Atendimentos",
+          "mode": "name"
+        },
+        "filtersUI": {
+          "values": [
+            {
+              "lookupColumn": "id_atendimento",
+              "lookupValue": "={{ $json.id_atendimento }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "ec6dc70f-2cd9-4cc8-ada3-9ac9ead4d6b4",
+      "name": "Ler atendimento atual",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        780,
+        0
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "",
+          "name": "Google Sheets - Vamos Sorrir"
+        }
+      },
+      "alwaysOutputData": true,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "// ---- lib/util.js ----\n// Utilitários compartilhados. Nos workflows n8n este arquivo é inlinado em cada Code node.\nconst crypto = require('crypto'); // exige NODE_FUNCTION_ALLOW_BUILTIN=crypto no n8n\n\nfunction sha256(s) { return crypto.createHash('sha256').update(String(s)).digest('hex'); }\nfunction hmacSha256(secret, data) { return crypto.createHmac('sha256', secret).update(data).digest('hex'); }\nfunction stripAccents(s) { return String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, ''); }\nfunction norm(s) { return stripAccents(s).toLowerCase().replace(/\\s+/g, ' ').trim(); }\n\n// Normaliza para dígitos com DDI (Brasil por padrão). WhatsApp envia \"5511999999999\".\nfunction normalizePhone(raw) {\n  let d = String(raw || '').replace(/\\D/g, '');\n  if (!d) return '';\n  if (d.startsWith('00')) d = d.slice(2);\n  if (d.length === 10 || d.length === 11) d = '55' + d;\n  // Número móvel BR antigo sem o 9: 55 + DDD + 8 dígitos\n  if (d.length === 12 && d.startsWith('55') && /^[6-9]/.test(d.slice(4))) d = d.slice(0, 4) + '9' + d.slice(4);\n  return d;\n}\nfunction maskPhone(p) { const d = String(p || ''); return d.length > 6 ? d.slice(0, 4) + '*****' + d.slice(-2) : '***'; }\nfunction phoneHash(p) { return sha256('tel:' + normalizePhone(p)).slice(0, 16); }\n\n// Evita injeção de fórmulas em planilhas (=, +, -, @).\nfunction sanitizeCell(v) {\n  if (v === null || v === undefined) return '';\n  const s = String(v);\n  return /^[=+\\-@\\t\\r]/.test(s) ? \"'\" + s : s;\n}\n\n// ---- lib/sheets.js ----\nconst STATUS = ['Novo contato', 'Em atendimento', 'Aguardando confirmação', 'Agendado', 'Remarcado', 'Cancelado', 'Concluído', 'Encaminhado para atendimento humano'];\n// Transições permitidas (evita regressões do tipo Cancelado -> Em atendimento por mensagem atrasada).\nconst TRANSICOES = {\n  '': STATUS,\n  'Novo contato': STATUS,\n  'Em atendimento': ['Em atendimento', 'Aguardando confirmação', 'Agendado', 'Cancelado', 'Concluído', 'Encaminhado para atendimento humano'],\n  'Aguardando confirmação': ['Em atendimento', 'Aguardando confirmação', 'Agendado', 'Cancelado', 'Encaminhado para atendimento humano'],\n  'Agendado': ['Agendado', 'Remarcado', 'Cancelado', 'Concluído', 'Encaminhado para atendimento humano'],\n  'Remarcado': ['Agendado', 'Remarcado', 'Cancelado', 'Concluído', 'Encaminhado para atendimento humano'],\n  'Cancelado': ['Cancelado', 'Em atendimento', 'Encaminhado para atendimento humano'],\n  'Concluído': ['Concluído'],\n  'Encaminhado para atendimento humano': STATUS,\n};\nfunction transicaoValida(de, para) { return STATUS.includes(para) && (TRANSICOES[de || ''] || STATUS).includes(para); }\n\nconst COLUNAS = {\n  Atendimentos: ['id_atendimento', 'nome_paciente', 'whatsapp', 'motivo_contato', 'tipo_consulta', 'data_agendamento', 'horario', 'profissional', 'status', 'data_criacao', 'ultima_atualizacao', 'evento_id', 'presenca_confirmada', 'consentimento_em'],\n  Sessoes: ['telefone', 'estado_1', 'estado_2', 'estado_3', 'estado_4', 'consentimento', 'ultimo_inbound_em', 'atualizado_em', 'expira_em'],\n  Fila_Entrada: ['wamid', 'telefone', 'tipo', 'texto', 'media_id', 'status', 'tentativas', 'proxima_tentativa_em', 'recebido_em', 'atualizado_em', 'nome_contato'],\n  Lembretes: ['chave', 'evento_id', 'telefone_hash', 'status', 'tentativas', 'wamid_envio', 'criado_em', 'atualizado_em'],\n  Erros: ['id', 'ocorrido_em', 'workflow', 'no', 'mensagem', 'execucao_id', 'chave_erro', 'notificado'],\n  Auditoria: ['id', 'ocorrido_em', 'evento', 'ator', 'telefone_hash', 'referencia', 'detalhe'],\n};\nfunction linha(aba, dados) {\n  const out = {};\n  for (const c of COLUNAS[aba]) out[c] = sanitizeCell(dados[c]);\n  return out;\n}\n// Só as colunas informadas (atualização parcial não apaga o que já existe).\nfunction linhaParcial(aba, dados) {\n  const out = {};\n  for (const c of COLUNAS[aba]) if (dados[c] !== undefined && dados[c] !== null) out[c] = sanitizeCell(dados[c]);\n  return out;\n}\n\n// ---- nó: Mesclar e validar ----\n\nconst e = $('Entrada').first().json, d = { ...e.dados }, atual = $input.first().json || {};\nconst existe = !!atual.id_atendimento, agora = new Date().toISOString();\nlet statusIgnorado = null;\nif (d.status && existe && !transicaoValida(atual.status, d.status)) { statusIgnorado = d.status; delete d.status; }\nif (!existe) { d.data_criacao = agora; if (!d.status) d.status = 'Novo contato'; }\nd.ultima_atualizacao = agora;\nreturn [{ json: linhaParcial('Atendimentos', d), pairedItem: 0 }];"
+      },
+      "id": "aa7cbc28-d2ff-4d52-affe-ecbc17537629",
+      "name": "Mesclar e validar",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1040,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "sheet",
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $env.SHEETS_ID }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Atendimentos",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [
+            "id_atendimento"
+          ],
+          "schema": []
+        },
+        "options": {}
+      },
+      "id": "2e19c5a3-5079-4fb6-adfb-322a8b7e3a90",
+      "name": "Gravar atendimento",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        1300,
+        0
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "",
+          "name": "Google Sheets - Vamos Sorrir"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "// ---- lib/util.js ----\n// Utilitários compartilhados. Nos workflows n8n este arquivo é inlinado em cada Code node.\nconst crypto = require('crypto'); // exige NODE_FUNCTION_ALLOW_BUILTIN=crypto no n8n\n\nfunction sha256(s) { return crypto.createHash('sha256').update(String(s)).digest('hex'); }\nfunction hmacSha256(secret, data) { return crypto.createHmac('sha256', secret).update(data).digest('hex'); }\nfunction stripAccents(s) { return String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, ''); }\nfunction norm(s) { return stripAccents(s).toLowerCase().replace(/\\s+/g, ' ').trim(); }\n\n// Normaliza para dígitos com DDI (Brasil por padrão). WhatsApp envia \"5511999999999\".\nfunction normalizePhone(raw) {\n  let d = String(raw || '').replace(/\\D/g, '');\n  if (!d) return '';\n  if (d.startsWith('00')) d = d.slice(2);\n  if (d.length === 10 || d.length === 11) d = '55' + d;\n  // Número móvel BR antigo sem o 9: 55 + DDD + 8 dígitos\n  if (d.length === 12 && d.startsWith('55') && /^[6-9]/.test(d.slice(4))) d = d.slice(0, 4) + '9' + d.slice(4);\n  return d;\n}\nfunction maskPhone(p) { const d = String(p || ''); return d.length > 6 ? d.slice(0, 4) + '*****' + d.slice(-2) : '***'; }\nfunction phoneHash(p) { return sha256('tel:' + normalizePhone(p)).slice(0, 16); }\n\n// Evita injeção de fórmulas em planilhas (=, +, -, @).\nfunction sanitizeCell(v) {\n  if (v === null || v === undefined) return '';\n  const s = String(v);\n  return /^[=+\\-@\\t\\r]/.test(s) ? \"'\" + s : s;\n}\n\n// ---- nó: Ok atendimento ----\nconst _ctx = ($('Entrada').first().json || {})._ctx;\nreturn [{ json: { ok: true, _ctx } }];"
+      },
+      "id": "c3c8e699-6727-48c0-a9a3-08b920110174",
+      "name": "Ok atendimento",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        0,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "// ---- lib/util.js ----\n// Utilitários compartilhados. Nos workflows n8n este arquivo é inlinado em cada Code node.\nconst crypto = require('crypto'); // exige NODE_FUNCTION_ALLOW_BUILTIN=crypto no n8n\n\nfunction sha256(s) { return crypto.createHash('sha256').update(String(s)).digest('hex'); }\nfunction hmacSha256(secret, data) { return crypto.createHmac('sha256', secret).update(data).digest('hex'); }\nfunction stripAccents(s) { return String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, ''); }\nfunction norm(s) { return stripAccents(s).toLowerCase().replace(/\\s+/g, ' ').trim(); }\n\n// Normaliza para dígitos com DDI (Brasil por padrão). WhatsApp envia \"5511999999999\".\nfunction normalizePhone(raw) {\n  let d = String(raw || '').replace(/\\D/g, '');\n  if (!d) return '';\n  if (d.startsWith('00')) d = d.slice(2);\n  if (d.length === 10 || d.length === 11) d = '55' + d;\n  // Número móvel BR antigo sem o 9: 55 + DDD + 8 dígitos\n  if (d.length === 12 && d.startsWith('55') && /^[6-9]/.test(d.slice(4))) d = d.slice(0, 4) + '9' + d.slice(4);\n  return d;\n}\nfunction maskPhone(p) { const d = String(p || ''); return d.length > 6 ? d.slice(0, 4) + '*****' + d.slice(-2) : '***'; }\nfunction phoneHash(p) { return sha256('tel:' + normalizePhone(p)).slice(0, 16); }\n\n// Evita injeção de fórmulas em planilhas (=, +, -, @).\nfunction sanitizeCell(v) {\n  if (v === null || v === undefined) return '';\n  const s = String(v);\n  return /^[=+\\-@\\t\\r]/.test(s) ? \"'\" + s : s;\n}\n\n// ---- lib/sheets.js ----\nconst STATUS = ['Novo contato', 'Em atendimento', 'Aguardando confirmação', 'Agendado', 'Remarcado', 'Cancelado', 'Concluído', 'Encaminhado para atendimento humano'];\n// Transições permitidas (evita regressões do tipo Cancelado -> Em atendimento por mensagem atrasada).\nconst TRANSICOES = {\n  '': STATUS,\n  'Novo contato': STATUS,\n  'Em atendimento': ['Em atendimento', 'Aguardando confirmação', 'Agendado', 'Cancelado', 'Concluído', 'Encaminhado para atendimento humano'],\n  'Aguardando confirmação': ['Em atendimento', 'Aguardando confirmação', 'Agendado', 'Cancelado', 'Encaminhado para atendimento humano'],\n  'Agendado': ['Agendado', 'Remarcado', 'Cancelado', 'Concluído', 'Encaminhado para atendimento humano'],\n  'Remarcado': ['Agendado', 'Remarcado', 'Cancelado', 'Concluído', 'Encaminhado para atendimento humano'],\n  'Cancelado': ['Cancelado', 'Em atendimento', 'Encaminhado para atendimento humano'],\n  'Concluído': ['Concluído'],\n  'Encaminhado para atendimento humano': STATUS,\n};\nfunction transicaoValida(de, para) { return STATUS.includes(para) && (TRANSICOES[de || ''] || STATUS).includes(para); }\n\nconst COLUNAS = {\n  Atendimentos: ['id_atendimento', 'nome_paciente', 'whatsapp', 'motivo_contato', 'tipo_consulta', 'data_agendamento', 'horario', 'profissional', 'status', 'data_criacao', 'ultima_atualizacao', 'evento_id', 'presenca_confirmada', 'consentimento_em'],\n  Sessoes: ['telefone', 'estado_1', 'estado_2', 'estado_3', 'estado_4', 'consentimento', 'ultimo_inbound_em', 'atualizado_em', 'expira_em'],\n  Fila_Entrada: ['wamid', 'telefone', 'tipo', 'texto', 'media_id', 'status', 'tentativas', 'proxima_tentativa_em', 'recebido_em', 'atualizado_em', 'nome_contato'],\n  Lembretes: ['chave', 'evento_id', 'telefone_hash', 'status', 'tentativas', 'wamid_envio', 'criado_em', 'atualizado_em'],\n  Erros: ['id', 'ocorrido_em', 'workflow', 'no', 'mensagem', 'execucao_id', 'chave_erro', 'notificado'],\n  Auditoria: ['id', 'ocorrido_em', 'evento', 'ator', 'telefone_hash', 'referencia', 'detalhe'],\n};\nfunction linha(aba, dados) {\n  const out = {};\n  for (const c of COLUNAS[aba]) out[c] = sanitizeCell(dados[c]);\n  return out;\n}\n// Só as colunas informadas (atualização parcial não apaga o que já existe).\nfunction linhaParcial(aba, dados) {\n  const out = {};\n  for (const c of COLUNAS[aba]) if (dados[c] !== undefined && dados[c] !== null) out[c] = sanitizeCell(dados[c]);\n  return out;\n}\n\n// ---- nó: Preparar lembrete ----\n\nconst d = $input.first().json.dados, agora = new Date().toISOString();\nconst r = { ...d, atualizado_em: agora }; if (d.novo) r.criado_em = agora; delete r.novo;\nreturn [{ json: linhaParcial('Lembretes', r) }];"
+      },
+      "id": "a24ece08-3a36-483c-af32-0269e0b4816e",
+      "name": "Preparar lembrete",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        260,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "sheet",
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $env.SHEETS_ID }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Lembretes",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [
+            "chave"
+          ],
+          "schema": []
+        },
+        "options": {}
+      },
+      "id": "3e0ef123-79c4-4eed-a96e-d873922a92d5",
+      "name": "Gravar lembrete",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        520,
+        220
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "",
+          "name": "Google Sheets - Vamos Sorrir"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "// ---- lib/util.js ----\n// Utilitários compartilhados. Nos workflows n8n este arquivo é inlinado em cada Code node.\nconst crypto = require('crypto'); // exige NODE_FUNCTION_ALLOW_BUILTIN=crypto no n8n\n\nfunction sha256(s) { return crypto.createHash('sha256').update(String(s)).digest('hex'); }\nfunction hmacSha256(secret, data) { return crypto.createHmac('sha256', secret).update(data).digest('hex'); }\nfunction stripAccents(s) { return String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, ''); }\nfunction norm(s) { return stripAccents(s).toLowerCase().replace(/\\s+/g, ' ').trim(); }\n\n// Normaliza para dígitos com DDI (Brasil por padrão). WhatsApp envia \"5511999999999\".\nfunction normalizePhone(raw) {\n  let d = String(raw || '').replace(/\\D/g, '');\n  if (!d) return '';\n  if (d.startsWith('00')) d = d.slice(2);\n  if (d.length === 10 || d.length === 11) d = '55' + d;\n  // Número móvel BR antigo sem o 9: 55 + DDD + 8 dígitos\n  if (d.length === 12 && d.startsWith('55') && /^[6-9]/.test(d.slice(4))) d = d.slice(0, 4) + '9' + d.slice(4);\n  return d;\n}\nfunction maskPhone(p) { const d = String(p || ''); return d.length > 6 ? d.slice(0, 4) + '*****' + d.slice(-2) : '***'; }\nfunction phoneHash(p) { return sha256('tel:' + normalizePhone(p)).slice(0, 16); }\n\n// Evita injeção de fórmulas em planilhas (=, +, -, @).\nfunction sanitizeCell(v) {\n  if (v === null || v === undefined) return '';\n  const s = String(v);\n  return /^[=+\\-@\\t\\r]/.test(s) ? \"'\" + s : s;\n}\n\n// ---- nó: Ok lembrete ----\nconst _ctx = ($('Entrada').first().json || {})._ctx;\nreturn [{ json: { ok: true, _ctx } }];"
+      },
+      "id": "cc26d635-65b2-4ae4-a55d-6efc69a84df3",
+      "name": "Ok lembrete",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        780,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "// ---- lib/util.js ----\n// Utilitários compartilhados. Nos workflows n8n este arquivo é inlinado em cada Code node.\nconst crypto = require('crypto'); // exige NODE_FUNCTION_ALLOW_BUILTIN=crypto no n8n\n\nfunction sha256(s) { return crypto.createHash('sha256').update(String(s)).digest('hex'); }\nfunction hmacSha256(secret, data) { return crypto.createHmac('sha256', secret).update(data).digest('hex'); }\nfunction stripAccents(s) { return String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, ''); }\nfunction norm(s) { return stripAccents(s).toLowerCase().replace(/\\s+/g, ' ').trim(); }\n\n// Normaliza para dígitos com DDI (Brasil por padrão). WhatsApp envia \"5511999999999\".\nfunction normalizePhone(raw) {\n  let d = String(raw || '').replace(/\\D/g, '');\n  if (!d) return '';\n  if (d.startsWith('00')) d = d.slice(2);\n  if (d.length === 10 || d.length === 11) d = '55' + d;\n  // Número móvel BR antigo sem o 9: 55 + DDD + 8 dígitos\n  if (d.length === 12 && d.startsWith('55') && /^[6-9]/.test(d.slice(4))) d = d.slice(0, 4) + '9' + d.slice(4);\n  return d;\n}\nfunction maskPhone(p) { const d = String(p || ''); return d.length > 6 ? d.slice(0, 4) + '*****' + d.slice(-2) : '***'; }\nfunction phoneHash(p) { return sha256('tel:' + normalizePhone(p)).slice(0, 16); }\n\n// Evita injeção de fórmulas em planilhas (=, +, -, @).\nfunction sanitizeCell(v) {\n  if (v === null || v === undefined) return '';\n  const s = String(v);\n  return /^[=+\\-@\\t\\r]/.test(s) ? \"'\" + s : s;\n}\n\n// ---- lib/sheets.js ----\nconst STATUS = ['Novo contato', 'Em atendimento', 'Aguardando confirmação', 'Agendado', 'Remarcado', 'Cancelado', 'Concluído', 'Encaminhado para atendimento humano'];\n// Transições permitidas (evita regressões do tipo Cancelado -> Em atendimento por mensagem atrasada).\nconst TRANSICOES = {\n  '': STATUS,\n  'Novo contato': STATUS,\n  'Em atendimento': ['Em atendimento', 'Aguardando confirmação', 'Agendado', 'Cancelado', 'Concluído', 'Encaminhado para atendimento humano'],\n  'Aguardando confirmação': ['Em atendimento', 'Aguardando confirmação', 'Agendado', 'Cancelado', 'Encaminhado para atendimento humano'],\n  'Agendado': ['Agendado', 'Remarcado', 'Cancelado', 'Concluído', 'Encaminhado para atendimento humano'],\n  'Remarcado': ['Agendado', 'Remarcado', 'Cancelado', 'Concluído', 'Encaminhado para atendimento humano'],\n  'Cancelado': ['Cancelado', 'Em atendimento', 'Encaminhado para atendimento humano'],\n  'Concluído': ['Concluído'],\n  'Encaminhado para atendimento humano': STATUS,\n};\nfunction transicaoValida(de, para) { return STATUS.includes(para) && (TRANSICOES[de || ''] || STATUS).includes(para); }\n\nconst COLUNAS = {\n  Atendimentos: ['id_atendimento', 'nome_paciente', 'whatsapp', 'motivo_contato', 'tipo_consulta', 'data_agendamento', 'horario', 'profissional', 'status', 'data_criacao', 'ultima_atualizacao', 'evento_id', 'presenca_confirmada', 'consentimento_em'],\n  Sessoes: ['telefone', 'estado_1', 'estado_2', 'estado_3', 'estado_4', 'consentimento', 'ultimo_inbound_em', 'atualizado_em', 'expira_em'],\n  Fila_Entrada: ['wamid', 'telefone', 'tipo', 'texto', 'media_id', 'status', 'tentativas', 'proxima_tentativa_em', 'recebido_em', 'atualizado_em', 'nome_contato'],\n  Lembretes: ['chave', 'evento_id', 'telefone_hash', 'status', 'tentativas', 'wamid_envio', 'criado_em', 'atualizado_em'],\n  Erros: ['id', 'ocorrido_em', 'workflow', 'no', 'mensagem', 'execucao_id', 'chave_erro', 'notificado'],\n  Auditoria: ['id', 'ocorrido_em', 'evento', 'ator', 'telefone_hash', 'referencia', 'detalhe'],\n};\nfunction linha(aba, dados) {\n  const out = {};\n  for (const c of COLUNAS[aba]) out[c] = sanitizeCell(dados[c]);\n  return out;\n}\n// Só as colunas informadas (atualização parcial não apaga o que já existe).\nfunction linhaParcial(aba, dados) {\n  const out = {};\n  for (const c of COLUNAS[aba]) if (dados[c] !== undefined && dados[c] !== null) out[c] = sanitizeCell(dados[c]);\n  return out;\n}\n\n// ---- nó: Preparar auditoria ----\n\nconst d = $input.first().json.dados, agora = new Date().toISOString();\nconst id = sha256(agora + '|' + d.evento + '|' + (d.referencia || '') + '|' + Math.random()).slice(0, 16);\nreturn [{ json: linhaParcial('Auditoria', { id, ocorrido_em: agora, evento: d.evento, ator: d.ator || 'sistema', telefone_hash: d.telefone_hash || '', referencia: d.referencia || '', detalhe: String(d.detalhe || '').slice(0, 200) }) }];"
+      },
+      "id": "ec4290a9-65d4-4f1a-aeda-ff1a7ac45793",
+      "name": "Preparar auditoria",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1040,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "sheet",
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $env.SHEETS_ID }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Auditoria",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [],
+          "schema": []
+        },
+        "options": {}
+      },
+      "id": "7c65ab75-1cbc-4fa0-a2e9-36f061886ae3",
+      "name": "Gravar auditoria",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        1300,
+        220
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "",
+          "name": "Google Sheets - Vamos Sorrir"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "// ---- lib/util.js ----\n// Utilitários compartilhados. Nos workflows n8n este arquivo é inlinado em cada Code node.\nconst crypto = require('crypto'); // exige NODE_FUNCTION_ALLOW_BUILTIN=crypto no n8n\n\nfunction sha256(s) { return crypto.createHash('sha256').update(String(s)).digest('hex'); }\nfunction hmacSha256(secret, data) { return crypto.createHmac('sha256', secret).update(data).digest('hex'); }\nfunction stripAccents(s) { return String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, ''); }\nfunction norm(s) { return stripAccents(s).toLowerCase().replace(/\\s+/g, ' ').trim(); }\n\n// Normaliza para dígitos com DDI (Brasil por padrão). WhatsApp envia \"5511999999999\".\nfunction normalizePhone(raw) {\n  let d = String(raw || '').replace(/\\D/g, '');\n  if (!d) return '';\n  if (d.startsWith('00')) d = d.slice(2);\n  if (d.length === 10 || d.length === 11) d = '55' + d;\n  // Número móvel BR antigo sem o 9: 55 + DDD + 8 dígitos\n  if (d.length === 12 && d.startsWith('55') && /^[6-9]/.test(d.slice(4))) d = d.slice(0, 4) + '9' + d.slice(4);\n  return d;\n}\nfunction maskPhone(p) { const d = String(p || ''); return d.length > 6 ? d.slice(0, 4) + '*****' + d.slice(-2) : '***'; }\nfunction phoneHash(p) { return sha256('tel:' + normalizePhone(p)).slice(0, 16); }\n\n// Evita injeção de fórmulas em planilhas (=, +, -, @).\nfunction sanitizeCell(v) {\n  if (v === null || v === undefined) return '';\n  const s = String(v);\n  return /^[=+\\-@\\t\\r]/.test(s) ? \"'\" + s : s;\n}\n\n// ---- nó: Ok auditoria ----\nconst _ctx = ($('Entrada').first().json || {})._ctx;\nreturn [{ json: { ok: true, _ctx } }];"
+      },
+      "id": "db9e0624-1116-4028-af0d-45acebfc4590",
+      "name": "Ok auditoria",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        0,
+        440
+      ]
+    }
+  ],
+  "connections": {
+    "Entrada": {
+      "main": [
+        [
+          {
+            "node": "Operação",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Chave do atendimento": {
+      "main": [
+        [
+          {
+            "node": "Ler atendimento atual",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ler atendimento atual": {
+      "main": [
+        [
+          {
+            "node": "Mesclar e validar",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mesclar e validar": {
+      "main": [
+        [
+          {
+            "node": "Gravar atendimento",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gravar atendimento": {
+      "main": [
+        [
+          {
+            "node": "Ok atendimento",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Preparar lembrete": {
+      "main": [
+        [
+          {
+            "node": "Gravar lembrete",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gravar lembrete": {
+      "main": [
+        [
+          {
+            "node": "Ok lembrete",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Preparar auditoria": {
+      "main": [
+        [
+          {
+            "node": "Gravar auditoria",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gravar auditoria": {
+      "main": [
+        [
+          {
+            "node": "Ok auditoria",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Operação": {
+      "main": [
+        [
+          {
+            "node": "Chave do atendimento",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Preparar lembrete",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Preparar auditoria",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "America/Sao_Paulo",
+    "saveManualExecutions": false,
+    "saveDataSuccessExecution": "none",
+    "saveDataErrorExecution": "none",
+    "saveExecutionProgress": false,
+    "errorWorkflow": "__WF:10__"
+  },
+  "active": false,
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "_id_logico": "07"
+}

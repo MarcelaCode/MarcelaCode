@@ -1,0 +1,1052 @@
+{
+  "name": "10 - Erros e manutencao",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "6cf4acbb-a656-4aed-aedc-c53bee7e571b",
+      "name": "Error Trigger",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "// ---- lib/util.js ----\n// Utilitários compartilhados. Nos workflows n8n este arquivo é inlinado em cada Code node.\nconst crypto = require('crypto'); // exige NODE_FUNCTION_ALLOW_BUILTIN=crypto no n8n\n\nfunction sha256(s) { return crypto.createHash('sha256').update(String(s)).digest('hex'); }\nfunction hmacSha256(secret, data) { return crypto.createHmac('sha256', secret).update(data).digest('hex'); }\nfunction stripAccents(s) { return String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, ''); }\nfunction norm(s) { return stripAccents(s).toLowerCase().replace(/\\s+/g, ' ').trim(); }\n\n// Normaliza para dígitos com DDI (Brasil por padrão). WhatsApp envia \"5511999999999\".\nfunction normalizePhone(raw) {\n  let d = String(raw || '').replace(/\\D/g, '');\n  if (!d) return '';\n  if (d.startsWith('00')) d = d.slice(2);\n  if (d.length === 10 || d.length === 11) d = '55' + d;\n  // Número móvel BR antigo sem o 9: 55 + DDD + 8 dígitos\n  if (d.length === 12 && d.startsWith('55') && /^[6-9]/.test(d.slice(4))) d = d.slice(0, 4) + '9' + d.slice(4);\n  return d;\n}\nfunction maskPhone(p) { const d = String(p || ''); return d.length > 6 ? d.slice(0, 4) + '*****' + d.slice(-2) : '***'; }\nfunction phoneHash(p) { return sha256('tel:' + normalizePhone(p)).slice(0, 16); }\n\n// Evita injeção de fórmulas em planilhas (=, +, -, @).\nfunction sanitizeCell(v) {\n  if (v === null || v === undefined) return '';\n  const s = String(v);\n  return /^[=+\\-@\\t\\r]/.test(s) ? \"'\" + s : s;\n}\n\n// ---- lib/errors.js ----\n// Remove dados pessoais/segredos de mensagens de erro antes de gravar ou notificar.\nfunction sanitizarMensagem(msg) {\n  return String(msg || '')\n    .replace(/(sk-[A-Za-z0-9_-]{8,}|EAA[A-Za-z0-9]{10,}|Bearer\\s+\\S+|ya29\\.[\\w-]+)/g, '[segredo]')\n    .replace(/[\\w.+-]+@[\\w-]+\\.[\\w.-]+/g, '[email]')\n    .replace(/\\b\\d{6,}\\b/g, '#')\n    .replace(/\\s+/g, ' ').trim().slice(0, 200);\n}\nfunction chaveErro(workflow, no, msg) {\n  return sha256([workflow, no, sanitizarMensagem(msg).replace(/\\d+/g, '#')].join('|')).slice(0, 12);\n}\n// rows: linhas da aba Erros com a mesma chave. Notifica no máximo 1x a cada N minutos por chave.\nfunction deveNotificar(rows, agoraMs, minutos = 15) {\n  return !(rows || []).some(r => r.notificado === 'sim' && agoraMs - Date.parse(r.ocorrido_em) < minutos * 60000);\n}\n\n// ---- nó: Sanitizar erro ----\n\nconst x = $input.first().json, wf = (x.workflow && x.workflow.name) || 'desconhecido';\nconst no = (x.execution && x.execution.error && x.execution.error.node && x.execution.error.node.name) || (x.execution && x.execution.lastNodeExecuted) || '';\nconst msg = sanitizarMensagem(x.execution && x.execution.error && x.execution.error.message);\nreturn [{ json: { workflow: wf, no, mensagem: msg, execucao_id: (x.execution && x.execution.id) || '', chave_erro: chaveErro(wf, no, msg) } }];"
+      },
+      "id": "f37e8e7b-0022-4a76-a52e-49c508d5c876",
+      "name": "Sanitizar erro",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        260,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "sheet",
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $env.SHEETS_ID }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Erros",
+          "mode": "name"
+        },
+        "filtersUI": {
+          "values": [
+            {
+              "lookupColumn": "chave_erro",
+              "lookupValue": "={{ $json.chave_erro }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "2da9e6ad-1d74-4150-a9cd-dce032eae3cb",
+      "name": "Buscar erros iguais",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        520,
+        0
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "",
+          "name": "Google Sheets - Vamos Sorrir"
+        }
+      },
+      "alwaysOutputData": true,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "// ---- lib/util.js ----\n// Utilitários compartilhados. Nos workflows n8n este arquivo é inlinado em cada Code node.\nconst crypto = require('crypto'); // exige NODE_FUNCTION_ALLOW_BUILTIN=crypto no n8n\n\nfunction sha256(s) { return crypto.createHash('sha256').update(String(s)).digest('hex'); }\nfunction hmacSha256(secret, data) { return crypto.createHmac('sha256', secret).update(data).digest('hex'); }\nfunction stripAccents(s) { return String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, ''); }\nfunction norm(s) { return stripAccents(s).toLowerCase().replace(/\\s+/g, ' ').trim(); }\n\n// Normaliza para dígitos com DDI (Brasil por padrão). WhatsApp envia \"5511999999999\".\nfunction normalizePhone(raw) {\n  let d = String(raw || '').replace(/\\D/g, '');\n  if (!d) return '';\n  if (d.startsWith('00')) d = d.slice(2);\n  if (d.length === 10 || d.length === 11) d = '55' + d;\n  // Número móvel BR antigo sem o 9: 55 + DDD + 8 dígitos\n  if (d.length === 12 && d.startsWith('55') && /^[6-9]/.test(d.slice(4))) d = d.slice(0, 4) + '9' + d.slice(4);\n  return d;\n}\nfunction maskPhone(p) { const d = String(p || ''); return d.length > 6 ? d.slice(0, 4) + '*****' + d.slice(-2) : '***'; }\nfunction phoneHash(p) { return sha256('tel:' + normalizePhone(p)).slice(0, 16); }\n\n// Evita injeção de fórmulas em planilhas (=, +, -, @).\nfunction sanitizeCell(v) {\n  if (v === null || v === undefined) return '';\n  const s = String(v);\n  return /^[=+\\-@\\t\\r]/.test(s) ? \"'\" + s : s;\n}\n\n// ---- lib/errors.js ----\n// Remove dados pessoais/segredos de mensagens de erro antes de gravar ou notificar.\nfunction sanitizarMensagem(msg) {\n  return String(msg || '')\n    .replace(/(sk-[A-Za-z0-9_-]{8,}|EAA[A-Za-z0-9]{10,}|Bearer\\s+\\S+|ya29\\.[\\w-]+)/g, '[segredo]')\n    .replace(/[\\w.+-]+@[\\w-]+\\.[\\w.-]+/g, '[email]')\n    .replace(/\\b\\d{6,}\\b/g, '#')\n    .replace(/\\s+/g, ' ').trim().slice(0, 200);\n}\nfunction chaveErro(workflow, no, msg) {\n  return sha256([workflow, no, sanitizarMensagem(msg).replace(/\\d+/g, '#')].join('|')).slice(0, 12);\n}\n// rows: linhas da aba Erros com a mesma chave. Notifica no máximo 1x a cada N minutos por chave.\nfunction deveNotificar(rows, agoraMs, minutos = 15) {\n  return !(rows || []).some(r => r.notificado === 'sim' && agoraMs - Date.parse(r.ocorrido_em) < minutos * 60000);\n}\n\n// ---- lib/sheets.js ----\nconst STATUS = ['Novo contato', 'Em atendimento', 'Aguardando confirmação', 'Agendado', 'Remarcado', 'Cancelado', 'Concluído', 'Encaminhado para atendimento humano'];\n// Transições permitidas (evita regressões do tipo Cancelado -> Em atendimento por mensagem atrasada).\nconst TRANSICOES = {\n  '': STATUS,\n  'Novo contato': STATUS,\n  'Em atendimento': ['Em atendimento', 'Aguardando confirmação', 'Agendado', 'Cancelado', 'Concluído', 'Encaminhado para atendimento humano'],\n  'Aguardando confirmação': ['Em atendimento', 'Aguardando confirmação', 'Agendado', 'Cancelado', 'Encaminhado para atendimento humano'],\n  'Agendado': ['Agendado', 'Remarcado', 'Cancelado', 'Concluído', 'Encaminhado para atendimento humano'],\n  'Remarcado': ['Agendado', 'Remarcado', 'Cancelado', 'Concluído', 'Encaminhado para atendimento humano'],\n  'Cancelado': ['Cancelado', 'Em atendimento', 'Encaminhado para atendimento humano'],\n  'Concluído': ['Concluído'],\n  'Encaminhado para atendimento humano': STATUS,\n};\nfunction transicaoValida(de, para) { return STATUS.includes(para) && (TRANSICOES[de || ''] || STATUS).includes(para); }\n\nconst COLUNAS = {\n  Atendimentos: ['id_atendimento', 'nome_paciente', 'whatsapp', 'motivo_contato', 'tipo_consulta', 'data_agendamento', 'horario', 'profissional', 'status', 'data_criacao', 'ultima_atualizacao', 'evento_id', 'presenca_confirmada', 'consentimento_em'],\n  Sessoes: ['telefone', 'estado_1', 'estado_2', 'estado_3', 'estado_4', 'consentimento', 'ultimo_inbound_em', 'atualizado_em', 'expira_em'],\n  Fila_Entrada: ['wamid', 'telefone', 'tipo', 'texto', 'media_id', 'status', 'tentativas', 'proxima_tentativa_em', 'recebido_em', 'atualizado_em', 'nome_contato'],\n  Lembretes: ['chave', 'evento_id', 'telefone_hash', 'status', 'tentativas', 'wamid_envio', 'criado_em', 'atualizado_em'],\n  Erros: ['id', 'ocorrido_em', 'workflow', 'no', 'mensagem', 'execucao_id', 'chave_erro', 'notificado'],\n  Auditoria: ['id', 'ocorrido_em', 'evento', 'ator', 'telefone_hash', 'referencia', 'detalhe'],\n};\nfunction linha(aba, dados) {\n  const out = {};\n  for (const c of COLUNAS[aba]) out[c] = sanitizeCell(dados[c]);\n  return out;\n}\n// Só as colunas informadas (atualização parcial não apaga o que já existe).\nfunction linhaParcial(aba, dados) {\n  const out = {};\n  for (const c of COLUNAS[aba]) if (dados[c] !== undefined && dados[c] !== null) out[c] = sanitizeCell(dados[c]);\n  return out;\n}\n\n// ---- nó: Throttle de alertas ----\n\nconst e = $('Sanitizar erro').first().json, rows = $input.all().map(i => i.json).filter(r => r.chave_erro);\nconst notificar = deveNotificar(rows, Date.now(), 15), agora = new Date().toISOString();\nconst id = sha256(agora + e.chave_erro + Math.random()).slice(0, 16);\nreturn [{ json: { notificar, row: linhaParcial('Erros', { id, ocorrido_em: agora, workflow: e.workflow, no: e.no, mensagem: e.mensagem, execucao_id: e.execucao_id, chave_erro: e.chave_erro, notificado: notificar ? 'sim' : 'suprimido' }) } }];"
+      },
+      "id": "b4b7b8f8-353b-4cf0-a23f-841efed03600",
+      "name": "Throttle de alertas",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        780,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "// ---- lib/util.js ----\n// Utilitários compartilhados. Nos workflows n8n este arquivo é inlinado em cada Code node.\nconst crypto = require('crypto'); // exige NODE_FUNCTION_ALLOW_BUILTIN=crypto no n8n\n\nfunction sha256(s) { return crypto.createHash('sha256').update(String(s)).digest('hex'); }\nfunction hmacSha256(secret, data) { return crypto.createHmac('sha256', secret).update(data).digest('hex'); }\nfunction stripAccents(s) { return String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, ''); }\nfunction norm(s) { return stripAccents(s).toLowerCase().replace(/\\s+/g, ' ').trim(); }\n\n// Normaliza para dígitos com DDI (Brasil por padrão). WhatsApp envia \"5511999999999\".\nfunction normalizePhone(raw) {\n  let d = String(raw || '').replace(/\\D/g, '');\n  if (!d) return '';\n  if (d.startsWith('00')) d = d.slice(2);\n  if (d.length === 10 || d.length === 11) d = '55' + d;\n  // Número móvel BR antigo sem o 9: 55 + DDD + 8 dígitos\n  if (d.length === 12 && d.startsWith('55') && /^[6-9]/.test(d.slice(4))) d = d.slice(0, 4) + '9' + d.slice(4);\n  return d;\n}\nfunction maskPhone(p) { const d = String(p || ''); return d.length > 6 ? d.slice(0, 4) + '*****' + d.slice(-2) : '***'; }\nfunction phoneHash(p) { return sha256('tel:' + normalizePhone(p)).slice(0, 16); }\n\n// Evita injeção de fórmulas em planilhas (=, +, -, @).\nfunction sanitizeCell(v) {\n  if (v === null || v === undefined) return '';\n  const s = String(v);\n  return /^[=+\\-@\\t\\r]/.test(s) ? \"'\" + s : s;\n}\n\n// ---- nó: Linha do erro ----\nreturn [{ json: $input.first().json.row }];"
+      },
+      "id": "0fbfd3bb-b943-4d4d-a6c5-2fc54df98521",
+      "name": "Linha do erro",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1040,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "sheet",
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $env.SHEETS_ID }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Erros",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [],
+          "schema": []
+        },
+        "options": {}
+      },
+      "id": "46253521-03a3-4ea8-abb5-cb68de87553a",
+      "name": "Gravar erro",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        1300,
+        0
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "",
+          "name": "Google Sheets - Vamos Sorrir"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "b2145650-3e9e-4ce3-a3ff-e6c8ce4d3f3f",
+              "leftValue": "={{ $('Throttle de alertas').first().json.notificar }}",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "161369e2-0c4a-4a48-a485-f9c96ca8443f",
+      "name": "Notificar equipe?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        0,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "// ---- lib/util.js ----\n// Utilitários compartilhados. Nos workflows n8n este arquivo é inlinado em cada Code node.\nconst crypto = require('crypto'); // exige NODE_FUNCTION_ALLOW_BUILTIN=crypto no n8n\n\nfunction sha256(s) { return crypto.createHash('sha256').update(String(s)).digest('hex'); }\nfunction hmacSha256(secret, data) { return crypto.createHmac('sha256', secret).update(data).digest('hex'); }\nfunction stripAccents(s) { return String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, ''); }\nfunction norm(s) { return stripAccents(s).toLowerCase().replace(/\\s+/g, ' ').trim(); }\n\n// Normaliza para dígitos com DDI (Brasil por padrão). WhatsApp envia \"5511999999999\".\nfunction normalizePhone(raw) {\n  let d = String(raw || '').replace(/\\D/g, '');\n  if (!d) return '';\n  if (d.startsWith('00')) d = d.slice(2);\n  if (d.length === 10 || d.length === 11) d = '55' + d;\n  // Número móvel BR antigo sem o 9: 55 + DDD + 8 dígitos\n  if (d.length === 12 && d.startsWith('55') && /^[6-9]/.test(d.slice(4))) d = d.slice(0, 4) + '9' + d.slice(4);\n  return d;\n}\nfunction maskPhone(p) { const d = String(p || ''); return d.length > 6 ? d.slice(0, 4) + '*****' + d.slice(-2) : '***'; }\nfunction phoneHash(p) { return sha256('tel:' + normalizePhone(p)).slice(0, 16); }\n\n// Evita injeção de fórmulas em planilhas (=, +, -, @).\nfunction sanitizeCell(v) {\n  if (v === null || v === undefined) return '';\n  const s = String(v);\n  return /^[=+\\-@\\t\\r]/.test(s) ? \"'\" + s : s;\n}\n\n// ---- lib/config.js ----\n// Configuração da clínica: nada é inventado; campos pendentes bloqueiam o atendimento.\nconst PENDENTE = '__PREENCHER__';\nconst OBRIGATORIOS = [\n  'clinica.nome', 'clinica.endereco', 'clinica.telefone', 'clinica.maps_link',\n  'privacidade.politica_url', 'privacidade.contato_encarregado',\n  'equipe.whatsapp_alertas', 'whatsapp.templates.lembrete', 'whatsapp.templates.alerta_equipe',\n  'agenda.fuso_offset_minutos', 'agenda.horario_funcionamento',\n];\nfunction get(obj, path) { return path.split('.').reduce((o, k) => (o == null ? undefined : o[k]), obj); }\nfunction vazio(v) {\n  return v === undefined || v === null || v === '' || (typeof v === 'string' && v.includes(PENDENTE)) ||\n    (Array.isArray(v) && v.length === 0) || (typeof v === 'object' && !Array.isArray(v) && Object.keys(v).length === 0);\n}\nfunction carregarConfig(json) {\n  try { return JSON.parse(json); } catch (e) { return null; }\n}\nfunction validarConfig(cfg) {\n  if (!cfg) return { ok: false, faltando: ['CLINICA_CONFIG_JSON inválido ou ausente'] };\n  const faltando = OBRIGATORIOS.filter(p => vazio(get(cfg, p)));\n  const profs = cfg.profissionais || [];\n  if (!profs.length) faltando.push('profissionais');\n  profs.forEach((p, i) => ['id', 'nome', 'calendar_id'].forEach(k => { if (vazio(p[k])) faltando.push(`profissionais[${i}].${k}`); }));\n  const servs = cfg.servicos || [];\n  if (!servs.length) faltando.push('servicos');\n  servs.forEach((s, i) => {\n    ['codigo', 'nome'].forEach(k => { if (vazio(s[k])) faltando.push(`servicos[${i}].${k}`); });\n    if (s.agendavel_online !== false && !(s.duracao_min > 0)) faltando.push(`servicos[${i}].duracao_min`);\n    if (s.agendavel_online !== false && !(s.profissional_ids || []).length) faltando.push(`servicos[${i}].profissional_ids`);\n  });\n  return { ok: faltando.length === 0, faltando };\n}\nfunction servico(cfg, codigo) { return (cfg.servicos || []).find(s => s.codigo === codigo); }\nfunction profissional(cfg, id) { return (cfg.profissionais || []).find(p => p.id === id); }\n// Texto que o agente pode usar sobre a clínica (somente o que está configurado).\nfunction infoClinica(cfg, topico) {\n  const c = cfg.clinica || {};\n  const nd = 'Informação não configurada pela clínica. Não invente: ofereça encaminhar para a equipe.';\n  const val = v => (vazio(v) ? nd : v);\n  switch (topico) {\n    case 'endereco': return { endereco: val(c.endereco), maps_link: val(c.maps_link) };\n    case 'telefone': return { telefone: val(c.telefone) };\n    case 'horario_funcionamento': return { horario: val(cfg.agenda && cfg.agenda.horario_funcionamento_texto) };\n    case 'profissionais': return { profissionais: (cfg.profissionais || []).filter(p => !vazio(p.nome)).map(p => ({ id: p.id, nome: p.nome, especialidade: vazio(p.especialidade) ? undefined : p.especialidade })) };\n    case 'servicos': return { servicos: (cfg.servicos || []).map(s => ({ codigo: s.codigo, nome: s.nome, agendavel_online: s.agendavel_online !== false, descricao: vazio(s.descricao) ? undefined : s.descricao })) };\n    case 'precos': return { precos: (cfg.servicos || []).filter(s => !vazio(s.preco_texto)).map(s => ({ servico: s.nome, preco: s.preco_texto })), observacao: 'Se o serviço não aparece aqui, o preço não foi informado: não invente, ofereça avaliação ou equipe.' };\n    case 'formas_pagamento': return { formas_pagamento: val(c.formas_pagamento) };\n    case 'orientacoes_consulta': return { orientacoes: val(cfg.agenda && cfg.agenda.orientacoes_consulta) };\n    default: return { erro: 'topico_desconhecido', topicos: ['endereco', 'telefone', 'horario_funcionamento', 'profissionais', 'servicos', 'precos', 'formas_pagamento', 'orientacoes_consulta'] };\n  }\n}\n\n// ---- nó: Preparar alerta de erro ----\nconst cfg = carregarConfig($env.CLINICA_CONFIG_JSON);\nconst e = $('Sanitizar erro').first().json;\nconst lim = s => String(s || '-').replace(/[\\n\\r\\t]+/g, ' ').slice(0, 100);\nreturn [{ json: { telefone: cfg.equipe.whatsapp_alertas, ultimo_inbound_em: null, itens: [{ tipo: 'template', template: { nome: cfg.whatsapp.templates.alerta_equipe, idioma: cfg.whatsapp.templates.idioma || 'pt_BR', parametros: ['Falha automática', lim(e.workflow), 'execução ' + lim(e.execucao_id), lim(e.no + ': ' + e.mensagem)] } }], _ctx: {} } }];"
+      },
+      "id": "678fa0b7-3989-4185-a366-ecb2431ca75a",
+      "name": "Preparar alerta de erro",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        260,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "__WF:08__",
+          "mode": "id"
+        },
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "id": "bdcea620-92ce-4846-a8e5-ea3398db6fe4",
+      "name": "Alertar equipe (08)",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.1,
+      "position": [
+        520,
+        220
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 5
+            }
+          ]
+        }
+      },
+      "id": "85744687-a1ec-4cc3-a2be-d46defa7ced0",
+      "name": "A cada 5 minutos",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        780,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "sheet",
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $env.SHEETS_ID }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Fila_Entrada",
+          "mode": "name"
+        },
+        "filtersUI": {
+          "values": [
+            {
+              "lookupColumn": "status",
+              "lookupValue": "ERRO_RETRY"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "4eb6c6bc-c4d8-4987-a84d-87d513699948",
+      "name": "Fila - erros a retentar",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        1040,
+        220
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "",
+          "name": "Google Sheets - Vamos Sorrir"
+        }
+      },
+      "alwaysOutputData": true,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "// ---- lib/util.js ----\n// Utilitários compartilhados. Nos workflows n8n este arquivo é inlinado em cada Code node.\nconst crypto = require('crypto'); // exige NODE_FUNCTION_ALLOW_BUILTIN=crypto no n8n\n\nfunction sha256(s) { return crypto.createHash('sha256').update(String(s)).digest('hex'); }\nfunction hmacSha256(secret, data) { return crypto.createHmac('sha256', secret).update(data).digest('hex'); }\nfunction stripAccents(s) { return String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, ''); }\nfunction norm(s) { return stripAccents(s).toLowerCase().replace(/\\s+/g, ' ').trim(); }\n\n// Normaliza para dígitos com DDI (Brasil por padrão). WhatsApp envia \"5511999999999\".\nfunction normalizePhone(raw) {\n  let d = String(raw || '').replace(/\\D/g, '');\n  if (!d) return '';\n  if (d.startsWith('00')) d = d.slice(2);\n  if (d.length === 10 || d.length === 11) d = '55' + d;\n  // Número móvel BR antigo sem o 9: 55 + DDD + 8 dígitos\n  if (d.length === 12 && d.startsWith('55') && /^[6-9]/.test(d.slice(4))) d = d.slice(0, 4) + '9' + d.slice(4);\n  return d;\n}\nfunction maskPhone(p) { const d = String(p || ''); return d.length > 6 ? d.slice(0, 4) + '*****' + d.slice(-2) : '***'; }\nfunction phoneHash(p) { return sha256('tel:' + normalizePhone(p)).slice(0, 16); }\n\n// Evita injeção de fórmulas em planilhas (=, +, -, @).\nfunction sanitizeCell(v) {\n  if (v === null || v === undefined) return '';\n  const s = String(v);\n  return /^[=+\\-@\\t\\r]/.test(s) ? \"'\" + s : s;\n}\n\n// ---- lib/retry.js ----\nconst MAX_TENTATIVAS_FILA = 3;\nconst BACKOFF_MIN = [1, 5, 15];\nfunction retentavel(status, codigo) {\n  if (!status) return true; // erro de rede/timeout\n  if ([408, 409, 425, 429].includes(Number(status))) return true;\n  return Number(status) >= 500;\n}\nfunction proximaTentativa(tentativas, agoraMs) {\n  if (tentativas >= MAX_TENTATIVAS_FILA) return null; // esgotado -> atendimento humano\n  return new Date(agoraMs + BACKOFF_MIN[Math.min(tentativas, BACKOFF_MIN.length - 1)] * 60000).toISOString();\n}\n\n// ---- nó: Selecionar vencidas ----\n\nconst agora = Date.now();\nreturn $input.all().map(i => i.json).filter(r => r.wamid && r.tipo === 'text' && Number(r.tentativas || 0) < MAX_TENTATIVAS_FILA && Date.parse(r.proxima_tentativa_em) <= agora)\n  .slice(0, 10).map(r => ({ json: { retry: true, mensagem: { wamid: r.wamid, telefone: r.telefone, nome_contato: r.nome_contato, texto: r.texto, tipo: 'text', tipo_logico: 'texto', timestamp: r.recebido_em, tentativas_anteriores: Number(r.tentativas || 0) } } }));"
+      },
+      "id": "ae3be154-4c42-46c4-a7e1-196cf415a5a6",
+      "name": "Selecionar vencidas",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1300,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "__WF:01b__",
+          "mode": "id"
+        },
+        "options": {
+          "waitForSubWorkflow": true
+        },
+        "mode": "each"
+      },
+      "id": "381d2221-bcaf-4101-a018-6fc1db296f4d",
+      "name": "Reprocessar mensagem (01b)",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.1,
+      "position": [
+        0,
+        440
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cron",
+              "expression": "0 3 * * *"
+            }
+          ]
+        }
+      },
+      "id": "126c8925-0785-4394-a204-4d8bdb450cae",
+      "name": "Todos os dias às 3h (retenção)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        260,
+        440
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "sheet",
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $env.SHEETS_ID }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Sessoes",
+          "mode": "name"
+        },
+        "options": {}
+      },
+      "id": "dcc2d0cf-ae29-4afe-ae6c-bb6a33cb32ff",
+      "name": "Ler Sessoes (retenção)",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        520,
+        440
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "",
+          "name": "Google Sheets - Vamos Sorrir"
+        }
+      },
+      "alwaysOutputData": true,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "// ---- lib/util.js ----\n// Utilitários compartilhados. Nos workflows n8n este arquivo é inlinado em cada Code node.\nconst crypto = require('crypto'); // exige NODE_FUNCTION_ALLOW_BUILTIN=crypto no n8n\n\nfunction sha256(s) { return crypto.createHash('sha256').update(String(s)).digest('hex'); }\nfunction hmacSha256(secret, data) { return crypto.createHmac('sha256', secret).update(data).digest('hex'); }\nfunction stripAccents(s) { return String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, ''); }\nfunction norm(s) { return stripAccents(s).toLowerCase().replace(/\\s+/g, ' ').trim(); }\n\n// Normaliza para dígitos com DDI (Brasil por padrão). WhatsApp envia \"5511999999999\".\nfunction normalizePhone(raw) {\n  let d = String(raw || '').replace(/\\D/g, '');\n  if (!d) return '';\n  if (d.startsWith('00')) d = d.slice(2);\n  if (d.length === 10 || d.length === 11) d = '55' + d;\n  // Número móvel BR antigo sem o 9: 55 + DDD + 8 dígitos\n  if (d.length === 12 && d.startsWith('55') && /^[6-9]/.test(d.slice(4))) d = d.slice(0, 4) + '9' + d.slice(4);\n  return d;\n}\nfunction maskPhone(p) { const d = String(p || ''); return d.length > 6 ? d.slice(0, 4) + '*****' + d.slice(-2) : '***'; }\nfunction phoneHash(p) { return sha256('tel:' + normalizePhone(p)).slice(0, 16); }\n\n// Evita injeção de fórmulas em planilhas (=, +, -, @).\nfunction sanitizeCell(v) {\n  if (v === null || v === undefined) return '';\n  const s = String(v);\n  return /^[=+\\-@\\t\\r]/.test(s) ? \"'\" + s : s;\n}\n\n// ---- lib/config.js ----\n// Configuração da clínica: nada é inventado; campos pendentes bloqueiam o atendimento.\nconst PENDENTE = '__PREENCHER__';\nconst OBRIGATORIOS = [\n  'clinica.nome', 'clinica.endereco', 'clinica.telefone', 'clinica.maps_link',\n  'privacidade.politica_url', 'privacidade.contato_encarregado',\n  'equipe.whatsapp_alertas', 'whatsapp.templates.lembrete', 'whatsapp.templates.alerta_equipe',\n  'agenda.fuso_offset_minutos', 'agenda.horario_funcionamento',\n];\nfunction get(obj, path) { return path.split('.').reduce((o, k) => (o == null ? undefined : o[k]), obj); }\nfunction vazio(v) {\n  return v === undefined || v === null || v === '' || (typeof v === 'string' && v.includes(PENDENTE)) ||\n    (Array.isArray(v) && v.length === 0) || (typeof v === 'object' && !Array.isArray(v) && Object.keys(v).length === 0);\n}\nfunction carregarConfig(json) {\n  try { return JSON.parse(json); } catch (e) { return null; }\n}\nfunction validarConfig(cfg) {\n  if (!cfg) return { ok: false, faltando: ['CLINICA_CONFIG_JSON inválido ou ausente'] };\n  const faltando = OBRIGATORIOS.filter(p => vazio(get(cfg, p)));\n  const profs = cfg.profissionais || [];\n  if (!profs.length) faltando.push('profissionais');\n  profs.forEach((p, i) => ['id', 'nome', 'calendar_id'].forEach(k => { if (vazio(p[k])) faltando.push(`profissionais[${i}].${k}`); }));\n  const servs = cfg.servicos || [];\n  if (!servs.length) faltando.push('servicos');\n  servs.forEach((s, i) => {\n    ['codigo', 'nome'].forEach(k => { if (vazio(s[k])) faltando.push(`servicos[${i}].${k}`); });\n    if (s.agendavel_online !== false && !(s.duracao_min > 0)) faltando.push(`servicos[${i}].duracao_min`);\n    if (s.agendavel_online !== false && !(s.profissional_ids || []).length) faltando.push(`servicos[${i}].profissional_ids`);\n  });\n  return { ok: faltando.length === 0, faltando };\n}\nfunction servico(cfg, codigo) { return (cfg.servicos || []).find(s => s.codigo === codigo); }\nfunction profissional(cfg, id) { return (cfg.profissionais || []).find(p => p.id === id); }\n// Texto que o agente pode usar sobre a clínica (somente o que está configurado).\nfunction infoClinica(cfg, topico) {\n  const c = cfg.clinica || {};\n  const nd = 'Informação não configurada pela clínica. Não invente: ofereça encaminhar para a equipe.';\n  const val = v => (vazio(v) ? nd : v);\n  switch (topico) {\n    case 'endereco': return { endereco: val(c.endereco), maps_link: val(c.maps_link) };\n    case 'telefone': return { telefone: val(c.telefone) };\n    case 'horario_funcionamento': return { horario: val(cfg.agenda && cfg.agenda.horario_funcionamento_texto) };\n    case 'profissionais': return { profissionais: (cfg.profissionais || []).filter(p => !vazio(p.nome)).map(p => ({ id: p.id, nome: p.nome, especialidade: vazio(p.especialidade) ? undefined : p.especialidade })) };\n    case 'servicos': return { servicos: (cfg.servicos || []).map(s => ({ codigo: s.codigo, nome: s.nome, agendavel_online: s.agendavel_online !== false, descricao: vazio(s.descricao) ? undefined : s.descricao })) };\n    case 'precos': return { precos: (cfg.servicos || []).filter(s => !vazio(s.preco_texto)).map(s => ({ servico: s.nome, preco: s.preco_texto })), observacao: 'Se o serviço não aparece aqui, o preço não foi informado: não invente, ofereça avaliação ou equipe.' };\n    case 'formas_pagamento': return { formas_pagamento: val(c.formas_pagamento) };\n    case 'orientacoes_consulta': return { orientacoes: val(cfg.agenda && cfg.agenda.orientacoes_consulta) };\n    default: return { erro: 'topico_desconhecido', topicos: ['endereco', 'telefone', 'horario_funcionamento', 'profissionais', 'servicos', 'precos', 'formas_pagamento', 'orientacoes_consulta'] };\n  }\n}\n\n// ---- lib/retention.js ----\n// Linhas expiradas, em ordem DECRESCENTE de número de linha (para exclusão em lote sem deslocar índices).\nfunction expiradas(linhas, campoData, dias, agoraMs) {\n  const lim = agoraMs - dias * 86400000;\n  return linhas.filter(r => { const t = Date.parse(r[campoData]); return !Number.isNaN(t) && t < lim; })\n    .map(r => r.row_number).sort((a, b) => b - a);\n}\n// Monta batchUpdate da Sheets API (deleteDimension). row_number é 1-based, incluindo cabeçalho.\nfunction pedidosExclusao(sheetGid, rowNumbers) {\n  return rowNumbers.map(n => ({ deleteDimension: { range: { sheetId: sheetGid, dimension: 'ROWS', startIndex: n - 1, endIndex: n } } }));\n}\n\n// ---- nó: Expiradas em Sessoes ----\nconst cfg = carregarConfig($env.CLINICA_CONFIG_JSON);\nconst ret = (cfg.privacidade && cfg.privacidade.retencao) || {};\nconst dias = ret.sessoes_dias || 7;\nconst gid = Number($env.SHEET_GID_SESSOES);\nif (Number.isNaN(gid)) throw new Error('SHEET_GID_SESSOES não configurado');\nconst linhas = $input.all().map(i => i.json).filter(r => r.row_number);\nconst ids = expiradas(linhas, 'atualizado_em', dias, Date.now());\nif (!ids.length) return [];\nreturn [{ json: { requests: pedidosExclusao(gid, ids) } }];"
+      },
+      "id": "e6f66687-84d9-4fac-a8eb-886f52a92fd5",
+      "name": "Expiradas em Sessoes",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        780,
+        440
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://sheets.googleapis.com/v4/spreadsheets/{{ $env.SHEETS_ID }}:batchUpdate",
+        "options": {
+          "timeout": 30000,
+          "response": {
+            "response": {
+              "fullResponse": false,
+              "neverError": false
+            }
+          }
+        },
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleSheetsOAuth2Api",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ requests: $json.requests }) }}"
+      },
+      "id": "eaf0563e-41fe-4d16-ad9f-6aa4d64a7db0",
+      "name": "Excluir linhas expiradas de Sessoes",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1040,
+        440
+      ],
+      "onError": "stopWorkflow",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "",
+          "name": "Google Sheets - Vamos Sorrir"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "sheet",
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $env.SHEETS_ID }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Fila_Entrada",
+          "mode": "name"
+        },
+        "options": {}
+      },
+      "id": "3bad930a-b04a-403b-a33e-56db15db6efc",
+      "name": "Ler Fila_Entrada (retenção)",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        1300,
+        440
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "",
+          "name": "Google Sheets - Vamos Sorrir"
+        }
+      },
+      "alwaysOutputData": true,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "// ---- lib/util.js ----\n// Utilitários compartilhados. Nos workflows n8n este arquivo é inlinado em cada Code node.\nconst crypto = require('crypto'); // exige NODE_FUNCTION_ALLOW_BUILTIN=crypto no n8n\n\nfunction sha256(s) { return crypto.createHash('sha256').update(String(s)).digest('hex'); }\nfunction hmacSha256(secret, data) { return crypto.createHmac('sha256', secret).update(data).digest('hex'); }\nfunction stripAccents(s) { return String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, ''); }\nfunction norm(s) { return stripAccents(s).toLowerCase().replace(/\\s+/g, ' ').trim(); }\n\n// Normaliza para dígitos com DDI (Brasil por padrão). WhatsApp envia \"5511999999999\".\nfunction normalizePhone(raw) {\n  let d = String(raw || '').replace(/\\D/g, '');\n  if (!d) return '';\n  if (d.startsWith('00')) d = d.slice(2);\n  if (d.length === 10 || d.length === 11) d = '55' + d;\n  // Número móvel BR antigo sem o 9: 55 + DDD + 8 dígitos\n  if (d.length === 12 && d.startsWith('55') && /^[6-9]/.test(d.slice(4))) d = d.slice(0, 4) + '9' + d.slice(4);\n  return d;\n}\nfunction maskPhone(p) { const d = String(p || ''); return d.length > 6 ? d.slice(0, 4) + '*****' + d.slice(-2) : '***'; }\nfunction phoneHash(p) { return sha256('tel:' + normalizePhone(p)).slice(0, 16); }\n\n// Evita injeção de fórmulas em planilhas (=, +, -, @).\nfunction sanitizeCell(v) {\n  if (v === null || v === undefined) return '';\n  const s = String(v);\n  return /^[=+\\-@\\t\\r]/.test(s) ? \"'\" + s : s;\n}\n\n// ---- lib/config.js ----\n// Configuração da clínica: nada é inventado; campos pendentes bloqueiam o atendimento.\nconst PENDENTE = '__PREENCHER__';\nconst OBRIGATORIOS = [\n  'clinica.nome', 'clinica.endereco', 'clinica.telefone', 'clinica.maps_link',\n  'privacidade.politica_url', 'privacidade.contato_encarregado',\n  'equipe.whatsapp_alertas', 'whatsapp.templates.lembrete', 'whatsapp.templates.alerta_equipe',\n  'agenda.fuso_offset_minutos', 'agenda.horario_funcionamento',\n];\nfunction get(obj, path) { return path.split('.').reduce((o, k) => (o == null ? undefined : o[k]), obj); }\nfunction vazio(v) {\n  return v === undefined || v === null || v === '' || (typeof v === 'string' && v.includes(PENDENTE)) ||\n    (Array.isArray(v) && v.length === 0) || (typeof v === 'object' && !Array.isArray(v) && Object.keys(v).length === 0);\n}\nfunction carregarConfig(json) {\n  try { return JSON.parse(json); } catch (e) { return null; }\n}\nfunction validarConfig(cfg) {\n  if (!cfg) return { ok: false, faltando: ['CLINICA_CONFIG_JSON inválido ou ausente'] };\n  const faltando = OBRIGATORIOS.filter(p => vazio(get(cfg, p)));\n  const profs = cfg.profissionais || [];\n  if (!profs.length) faltando.push('profissionais');\n  profs.forEach((p, i) => ['id', 'nome', 'calendar_id'].forEach(k => { if (vazio(p[k])) faltando.push(`profissionais[${i}].${k}`); }));\n  const servs = cfg.servicos || [];\n  if (!servs.length) faltando.push('servicos');\n  servs.forEach((s, i) => {\n    ['codigo', 'nome'].forEach(k => { if (vazio(s[k])) faltando.push(`servicos[${i}].${k}`); });\n    if (s.agendavel_online !== false && !(s.duracao_min > 0)) faltando.push(`servicos[${i}].duracao_min`);\n    if (s.agendavel_online !== false && !(s.profissional_ids || []).length) faltando.push(`servicos[${i}].profissional_ids`);\n  });\n  return { ok: faltando.length === 0, faltando };\n}\nfunction servico(cfg, codigo) { return (cfg.servicos || []).find(s => s.codigo === codigo); }\nfunction profissional(cfg, id) { return (cfg.profissionais || []).find(p => p.id === id); }\n// Texto que o agente pode usar sobre a clínica (somente o que está configurado).\nfunction infoClinica(cfg, topico) {\n  const c = cfg.clinica || {};\n  const nd = 'Informação não configurada pela clínica. Não invente: ofereça encaminhar para a equipe.';\n  const val = v => (vazio(v) ? nd : v);\n  switch (topico) {\n    case 'endereco': return { endereco: val(c.endereco), maps_link: val(c.maps_link) };\n    case 'telefone': return { telefone: val(c.telefone) };\n    case 'horario_funcionamento': return { horario: val(cfg.agenda && cfg.agenda.horario_funcionamento_texto) };\n    case 'profissionais': return { profissionais: (cfg.profissionais || []).filter(p => !vazio(p.nome)).map(p => ({ id: p.id, nome: p.nome, especialidade: vazio(p.especialidade) ? undefined : p.especialidade })) };\n    case 'servicos': return { servicos: (cfg.servicos || []).map(s => ({ codigo: s.codigo, nome: s.nome, agendavel_online: s.agendavel_online !== false, descricao: vazio(s.descricao) ? undefined : s.descricao })) };\n    case 'precos': return { precos: (cfg.servicos || []).filter(s => !vazio(s.preco_texto)).map(s => ({ servico: s.nome, preco: s.preco_texto })), observacao: 'Se o serviço não aparece aqui, o preço não foi informado: não invente, ofereça avaliação ou equipe.' };\n    case 'formas_pagamento': return { formas_pagamento: val(c.formas_pagamento) };\n    case 'orientacoes_consulta': return { orientacoes: val(cfg.agenda && cfg.agenda.orientacoes_consulta) };\n    default: return { erro: 'topico_desconhecido', topicos: ['endereco', 'telefone', 'horario_funcionamento', 'profissionais', 'servicos', 'precos', 'formas_pagamento', 'orientacoes_consulta'] };\n  }\n}\n\n// ---- lib/retention.js ----\n// Linhas expiradas, em ordem DECRESCENTE de número de linha (para exclusão em lote sem deslocar índices).\nfunction expiradas(linhas, campoData, dias, agoraMs) {\n  const lim = agoraMs - dias * 86400000;\n  return linhas.filter(r => { const t = Date.parse(r[campoData]); return !Number.isNaN(t) && t < lim; })\n    .map(r => r.row_number).sort((a, b) => b - a);\n}\n// Monta batchUpdate da Sheets API (deleteDimension). row_number é 1-based, incluindo cabeçalho.\nfunction pedidosExclusao(sheetGid, rowNumbers) {\n  return rowNumbers.map(n => ({ deleteDimension: { range: { sheetId: sheetGid, dimension: 'ROWS', startIndex: n - 1, endIndex: n } } }));\n}\n\n// ---- nó: Expiradas em Fila_Entrada ----\nconst cfg = carregarConfig($env.CLINICA_CONFIG_JSON);\nconst ret = (cfg.privacidade && cfg.privacidade.retencao) || {};\nconst dias = ret.fila_dias || 7;\nconst gid = Number($env.SHEET_GID_FILA_ENTRADA);\nif (Number.isNaN(gid)) throw new Error('SHEET_GID_FILA_ENTRADA não configurado');\nconst linhas = $input.all().map(i => i.json).filter(r => r.row_number);\nconst ids = expiradas(linhas, 'recebido_em', dias, Date.now());\nif (!ids.length) return [];\nreturn [{ json: { requests: pedidosExclusao(gid, ids) } }];"
+      },
+      "id": "07d5ab77-7186-4de9-a055-e9424a8ca4b9",
+      "name": "Expiradas em Fila_Entrada",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        0,
+        660
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://sheets.googleapis.com/v4/spreadsheets/{{ $env.SHEETS_ID }}:batchUpdate",
+        "options": {
+          "timeout": 30000,
+          "response": {
+            "response": {
+              "fullResponse": false,
+              "neverError": false
+            }
+          }
+        },
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleSheetsOAuth2Api",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ requests: $json.requests }) }}"
+      },
+      "id": "eaa09401-6187-4da8-aee2-cc29ff3b4747",
+      "name": "Excluir linhas expiradas de Fila_Entrada",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        260,
+        660
+      ],
+      "onError": "stopWorkflow",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "",
+          "name": "Google Sheets - Vamos Sorrir"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "sheet",
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $env.SHEETS_ID }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Erros",
+          "mode": "name"
+        },
+        "options": {}
+      },
+      "id": "5e358d1c-2b89-4d31-a97f-ef8f98a83974",
+      "name": "Ler Erros (retenção)",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        520,
+        660
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "",
+          "name": "Google Sheets - Vamos Sorrir"
+        }
+      },
+      "alwaysOutputData": true,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "// ---- lib/util.js ----\n// Utilitários compartilhados. Nos workflows n8n este arquivo é inlinado em cada Code node.\nconst crypto = require('crypto'); // exige NODE_FUNCTION_ALLOW_BUILTIN=crypto no n8n\n\nfunction sha256(s) { return crypto.createHash('sha256').update(String(s)).digest('hex'); }\nfunction hmacSha256(secret, data) { return crypto.createHmac('sha256', secret).update(data).digest('hex'); }\nfunction stripAccents(s) { return String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, ''); }\nfunction norm(s) { return stripAccents(s).toLowerCase().replace(/\\s+/g, ' ').trim(); }\n\n// Normaliza para dígitos com DDI (Brasil por padrão). WhatsApp envia \"5511999999999\".\nfunction normalizePhone(raw) {\n  let d = String(raw || '').replace(/\\D/g, '');\n  if (!d) return '';\n  if (d.startsWith('00')) d = d.slice(2);\n  if (d.length === 10 || d.length === 11) d = '55' + d;\n  // Número móvel BR antigo sem o 9: 55 + DDD + 8 dígitos\n  if (d.length === 12 && d.startsWith('55') && /^[6-9]/.test(d.slice(4))) d = d.slice(0, 4) + '9' + d.slice(4);\n  return d;\n}\nfunction maskPhone(p) { const d = String(p || ''); return d.length > 6 ? d.slice(0, 4) + '*****' + d.slice(-2) : '***'; }\nfunction phoneHash(p) { return sha256('tel:' + normalizePhone(p)).slice(0, 16); }\n\n// Evita injeção de fórmulas em planilhas (=, +, -, @).\nfunction sanitizeCell(v) {\n  if (v === null || v === undefined) return '';\n  const s = String(v);\n  return /^[=+\\-@\\t\\r]/.test(s) ? \"'\" + s : s;\n}\n\n// ---- lib/config.js ----\n// Configuração da clínica: nada é inventado; campos pendentes bloqueiam o atendimento.\nconst PENDENTE = '__PREENCHER__';\nconst OBRIGATORIOS = [\n  'clinica.nome', 'clinica.endereco', 'clinica.telefone', 'clinica.maps_link',\n  'privacidade.politica_url', 'privacidade.contato_encarregado',\n  'equipe.whatsapp_alertas', 'whatsapp.templates.lembrete', 'whatsapp.templates.alerta_equipe',\n  'agenda.fuso_offset_minutos', 'agenda.horario_funcionamento',\n];\nfunction get(obj, path) { return path.split('.').reduce((o, k) => (o == null ? undefined : o[k]), obj); }\nfunction vazio(v) {\n  return v === undefined || v === null || v === '' || (typeof v === 'string' && v.includes(PENDENTE)) ||\n    (Array.isArray(v) && v.length === 0) || (typeof v === 'object' && !Array.isArray(v) && Object.keys(v).length === 0);\n}\nfunction carregarConfig(json) {\n  try { return JSON.parse(json); } catch (e) { return null; }\n}\nfunction validarConfig(cfg) {\n  if (!cfg) return { ok: false, faltando: ['CLINICA_CONFIG_JSON inválido ou ausente'] };\n  const faltando = OBRIGATORIOS.filter(p => vazio(get(cfg, p)));\n  const profs = cfg.profissionais || [];\n  if (!profs.length) faltando.push('profissionais');\n  profs.forEach((p, i) => ['id', 'nome', 'calendar_id'].forEach(k => { if (vazio(p[k])) faltando.push(`profissionais[${i}].${k}`); }));\n  const servs = cfg.servicos || [];\n  if (!servs.length) faltando.push('servicos');\n  servs.forEach((s, i) => {\n    ['codigo', 'nome'].forEach(k => { if (vazio(s[k])) faltando.push(`servicos[${i}].${k}`); });\n    if (s.agendavel_online !== false && !(s.duracao_min > 0)) faltando.push(`servicos[${i}].duracao_min`);\n    if (s.agendavel_online !== false && !(s.profissional_ids || []).length) faltando.push(`servicos[${i}].profissional_ids`);\n  });\n  return { ok: faltando.length === 0, faltando };\n}\nfunction servico(cfg, codigo) { return (cfg.servicos || []).find(s => s.codigo === codigo); }\nfunction profissional(cfg, id) { return (cfg.profissionais || []).find(p => p.id === id); }\n// Texto que o agente pode usar sobre a clínica (somente o que está configurado).\nfunction infoClinica(cfg, topico) {\n  const c = cfg.clinica || {};\n  const nd = 'Informação não configurada pela clínica. Não invente: ofereça encaminhar para a equipe.';\n  const val = v => (vazio(v) ? nd : v);\n  switch (topico) {\n    case 'endereco': return { endereco: val(c.endereco), maps_link: val(c.maps_link) };\n    case 'telefone': return { telefone: val(c.telefone) };\n    case 'horario_funcionamento': return { horario: val(cfg.agenda && cfg.agenda.horario_funcionamento_texto) };\n    case 'profissionais': return { profissionais: (cfg.profissionais || []).filter(p => !vazio(p.nome)).map(p => ({ id: p.id, nome: p.nome, especialidade: vazio(p.especialidade) ? undefined : p.especialidade })) };\n    case 'servicos': return { servicos: (cfg.servicos || []).map(s => ({ codigo: s.codigo, nome: s.nome, agendavel_online: s.agendavel_online !== false, descricao: vazio(s.descricao) ? undefined : s.descricao })) };\n    case 'precos': return { precos: (cfg.servicos || []).filter(s => !vazio(s.preco_texto)).map(s => ({ servico: s.nome, preco: s.preco_texto })), observacao: 'Se o serviço não aparece aqui, o preço não foi informado: não invente, ofereça avaliação ou equipe.' };\n    case 'formas_pagamento': return { formas_pagamento: val(c.formas_pagamento) };\n    case 'orientacoes_consulta': return { orientacoes: val(cfg.agenda && cfg.agenda.orientacoes_consulta) };\n    default: return { erro: 'topico_desconhecido', topicos: ['endereco', 'telefone', 'horario_funcionamento', 'profissionais', 'servicos', 'precos', 'formas_pagamento', 'orientacoes_consulta'] };\n  }\n}\n\n// ---- lib/retention.js ----\n// Linhas expiradas, em ordem DECRESCENTE de número de linha (para exclusão em lote sem deslocar índices).\nfunction expiradas(linhas, campoData, dias, agoraMs) {\n  const lim = agoraMs - dias * 86400000;\n  return linhas.filter(r => { const t = Date.parse(r[campoData]); return !Number.isNaN(t) && t < lim; })\n    .map(r => r.row_number).sort((a, b) => b - a);\n}\n// Monta batchUpdate da Sheets API (deleteDimension). row_number é 1-based, incluindo cabeçalho.\nfunction pedidosExclusao(sheetGid, rowNumbers) {\n  return rowNumbers.map(n => ({ deleteDimension: { range: { sheetId: sheetGid, dimension: 'ROWS', startIndex: n - 1, endIndex: n } } }));\n}\n\n// ---- nó: Expiradas em Erros ----\nconst cfg = carregarConfig($env.CLINICA_CONFIG_JSON);\nconst ret = (cfg.privacidade && cfg.privacidade.retencao) || {};\nconst dias = ret.erros_dias || 90;\nconst gid = Number($env.SHEET_GID_ERROS);\nif (Number.isNaN(gid)) throw new Error('SHEET_GID_ERROS não configurado');\nconst linhas = $input.all().map(i => i.json).filter(r => r.row_number);\nconst ids = expiradas(linhas, 'ocorrido_em', dias, Date.now());\nif (!ids.length) return [];\nreturn [{ json: { requests: pedidosExclusao(gid, ids) } }];"
+      },
+      "id": "c38751ca-c543-4bf1-a9ee-ad8100bc5d99",
+      "name": "Expiradas em Erros",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        780,
+        660
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://sheets.googleapis.com/v4/spreadsheets/{{ $env.SHEETS_ID }}:batchUpdate",
+        "options": {
+          "timeout": 30000,
+          "response": {
+            "response": {
+              "fullResponse": false,
+              "neverError": false
+            }
+          }
+        },
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleSheetsOAuth2Api",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ requests: $json.requests }) }}"
+      },
+      "id": "16521961-ffb0-4779-ad66-6ca56b23ac62",
+      "name": "Excluir linhas expiradas de Erros",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1040,
+        660
+      ],
+      "onError": "stopWorkflow",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "",
+          "name": "Google Sheets - Vamos Sorrir"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "sheet",
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $env.SHEETS_ID }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Lembretes",
+          "mode": "name"
+        },
+        "options": {}
+      },
+      "id": "56f6366f-8df9-4bb1-a9fb-f9be8047c533",
+      "name": "Ler Lembretes (retenção)",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        1300,
+        660
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "",
+          "name": "Google Sheets - Vamos Sorrir"
+        }
+      },
+      "alwaysOutputData": true,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "// ---- lib/util.js ----\n// Utilitários compartilhados. Nos workflows n8n este arquivo é inlinado em cada Code node.\nconst crypto = require('crypto'); // exige NODE_FUNCTION_ALLOW_BUILTIN=crypto no n8n\n\nfunction sha256(s) { return crypto.createHash('sha256').update(String(s)).digest('hex'); }\nfunction hmacSha256(secret, data) { return crypto.createHmac('sha256', secret).update(data).digest('hex'); }\nfunction stripAccents(s) { return String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, ''); }\nfunction norm(s) { return stripAccents(s).toLowerCase().replace(/\\s+/g, ' ').trim(); }\n\n// Normaliza para dígitos com DDI (Brasil por padrão). WhatsApp envia \"5511999999999\".\nfunction normalizePhone(raw) {\n  let d = String(raw || '').replace(/\\D/g, '');\n  if (!d) return '';\n  if (d.startsWith('00')) d = d.slice(2);\n  if (d.length === 10 || d.length === 11) d = '55' + d;\n  // Número móvel BR antigo sem o 9: 55 + DDD + 8 dígitos\n  if (d.length === 12 && d.startsWith('55') && /^[6-9]/.test(d.slice(4))) d = d.slice(0, 4) + '9' + d.slice(4);\n  return d;\n}\nfunction maskPhone(p) { const d = String(p || ''); return d.length > 6 ? d.slice(0, 4) + '*****' + d.slice(-2) : '***'; }\nfunction phoneHash(p) { return sha256('tel:' + normalizePhone(p)).slice(0, 16); }\n\n// Evita injeção de fórmulas em planilhas (=, +, -, @).\nfunction sanitizeCell(v) {\n  if (v === null || v === undefined) return '';\n  const s = String(v);\n  return /^[=+\\-@\\t\\r]/.test(s) ? \"'\" + s : s;\n}\n\n// ---- lib/config.js ----\n// Configuração da clínica: nada é inventado; campos pendentes bloqueiam o atendimento.\nconst PENDENTE = '__PREENCHER__';\nconst OBRIGATORIOS = [\n  'clinica.nome', 'clinica.endereco', 'clinica.telefone', 'clinica.maps_link',\n  'privacidade.politica_url', 'privacidade.contato_encarregado',\n  'equipe.whatsapp_alertas', 'whatsapp.templates.lembrete', 'whatsapp.templates.alerta_equipe',\n  'agenda.fuso_offset_minutos', 'agenda.horario_funcionamento',\n];\nfunction get(obj, path) { return path.split('.').reduce((o, k) => (o == null ? undefined : o[k]), obj); }\nfunction vazio(v) {\n  return v === undefined || v === null || v === '' || (typeof v === 'string' && v.includes(PENDENTE)) ||\n    (Array.isArray(v) && v.length === 0) || (typeof v === 'object' && !Array.isArray(v) && Object.keys(v).length === 0);\n}\nfunction carregarConfig(json) {\n  try { return JSON.parse(json); } catch (e) { return null; }\n}\nfunction validarConfig(cfg) {\n  if (!cfg) return { ok: false, faltando: ['CLINICA_CONFIG_JSON inválido ou ausente'] };\n  const faltando = OBRIGATORIOS.filter(p => vazio(get(cfg, p)));\n  const profs = cfg.profissionais || [];\n  if (!profs.length) faltando.push('profissionais');\n  profs.forEach((p, i) => ['id', 'nome', 'calendar_id'].forEach(k => { if (vazio(p[k])) faltando.push(`profissionais[${i}].${k}`); }));\n  const servs = cfg.servicos || [];\n  if (!servs.length) faltando.push('servicos');\n  servs.forEach((s, i) => {\n    ['codigo', 'nome'].forEach(k => { if (vazio(s[k])) faltando.push(`servicos[${i}].${k}`); });\n    if (s.agendavel_online !== false && !(s.duracao_min > 0)) faltando.push(`servicos[${i}].duracao_min`);\n    if (s.agendavel_online !== false && !(s.profissional_ids || []).length) faltando.push(`servicos[${i}].profissional_ids`);\n  });\n  return { ok: faltando.length === 0, faltando };\n}\nfunction servico(cfg, codigo) { return (cfg.servicos || []).find(s => s.codigo === codigo); }\nfunction profissional(cfg, id) { return (cfg.profissionais || []).find(p => p.id === id); }\n// Texto que o agente pode usar sobre a clínica (somente o que está configurado).\nfunction infoClinica(cfg, topico) {\n  const c = cfg.clinica || {};\n  const nd = 'Informação não configurada pela clínica. Não invente: ofereça encaminhar para a equipe.';\n  const val = v => (vazio(v) ? nd : v);\n  switch (topico) {\n    case 'endereco': return { endereco: val(c.endereco), maps_link: val(c.maps_link) };\n    case 'telefone': return { telefone: val(c.telefone) };\n    case 'horario_funcionamento': return { horario: val(cfg.agenda && cfg.agenda.horario_funcionamento_texto) };\n    case 'profissionais': return { profissionais: (cfg.profissionais || []).filter(p => !vazio(p.nome)).map(p => ({ id: p.id, nome: p.nome, especialidade: vazio(p.especialidade) ? undefined : p.especialidade })) };\n    case 'servicos': return { servicos: (cfg.servicos || []).map(s => ({ codigo: s.codigo, nome: s.nome, agendavel_online: s.agendavel_online !== false, descricao: vazio(s.descricao) ? undefined : s.descricao })) };\n    case 'precos': return { precos: (cfg.servicos || []).filter(s => !vazio(s.preco_texto)).map(s => ({ servico: s.nome, preco: s.preco_texto })), observacao: 'Se o serviço não aparece aqui, o preço não foi informado: não invente, ofereça avaliação ou equipe.' };\n    case 'formas_pagamento': return { formas_pagamento: val(c.formas_pagamento) };\n    case 'orientacoes_consulta': return { orientacoes: val(cfg.agenda && cfg.agenda.orientacoes_consulta) };\n    default: return { erro: 'topico_desconhecido', topicos: ['endereco', 'telefone', 'horario_funcionamento', 'profissionais', 'servicos', 'precos', 'formas_pagamento', 'orientacoes_consulta'] };\n  }\n}\n\n// ---- lib/retention.js ----\n// Linhas expiradas, em ordem DECRESCENTE de número de linha (para exclusão em lote sem deslocar índices).\nfunction expiradas(linhas, campoData, dias, agoraMs) {\n  const lim = agoraMs - dias * 86400000;\n  return linhas.filter(r => { const t = Date.parse(r[campoData]); return !Number.isNaN(t) && t < lim; })\n    .map(r => r.row_number).sort((a, b) => b - a);\n}\n// Monta batchUpdate da Sheets API (deleteDimension). row_number é 1-based, incluindo cabeçalho.\nfunction pedidosExclusao(sheetGid, rowNumbers) {\n  return rowNumbers.map(n => ({ deleteDimension: { range: { sheetId: sheetGid, dimension: 'ROWS', startIndex: n - 1, endIndex: n } } }));\n}\n\n// ---- nó: Expiradas em Lembretes ----\nconst cfg = carregarConfig($env.CLINICA_CONFIG_JSON);\nconst ret = (cfg.privacidade && cfg.privacidade.retencao) || {};\nconst dias = ret.lembretes_dias || 90;\nconst gid = Number($env.SHEET_GID_LEMBRETES);\nif (Number.isNaN(gid)) throw new Error('SHEET_GID_LEMBRETES não configurado');\nconst linhas = $input.all().map(i => i.json).filter(r => r.row_number);\nconst ids = expiradas(linhas, 'criado_em', dias, Date.now());\nif (!ids.length) return [];\nreturn [{ json: { requests: pedidosExclusao(gid, ids) } }];"
+      },
+      "id": "e59d1067-c173-40aa-a204-4dd6d218f315",
+      "name": "Expiradas em Lembretes",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        0,
+        880
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://sheets.googleapis.com/v4/spreadsheets/{{ $env.SHEETS_ID }}:batchUpdate",
+        "options": {
+          "timeout": 30000,
+          "response": {
+            "response": {
+              "fullResponse": false,
+              "neverError": false
+            }
+          }
+        },
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleSheetsOAuth2Api",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ requests: $json.requests }) }}"
+      },
+      "id": "add99e10-1d13-40d6-a478-d8e3bdaf3498",
+      "name": "Excluir linhas expiradas de Lembretes",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        260,
+        880
+      ],
+      "onError": "stopWorkflow",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "",
+          "name": "Google Sheets - Vamos Sorrir"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "sheet",
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $env.SHEETS_ID }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Auditoria",
+          "mode": "name"
+        },
+        "options": {}
+      },
+      "id": "64b07975-6bf3-4c4f-afb6-e24291e7e7f8",
+      "name": "Ler Auditoria (retenção)",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        520,
+        880
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "",
+          "name": "Google Sheets - Vamos Sorrir"
+        }
+      },
+      "alwaysOutputData": true,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "// ---- lib/util.js ----\n// Utilitários compartilhados. Nos workflows n8n este arquivo é inlinado em cada Code node.\nconst crypto = require('crypto'); // exige NODE_FUNCTION_ALLOW_BUILTIN=crypto no n8n\n\nfunction sha256(s) { return crypto.createHash('sha256').update(String(s)).digest('hex'); }\nfunction hmacSha256(secret, data) { return crypto.createHmac('sha256', secret).update(data).digest('hex'); }\nfunction stripAccents(s) { return String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, ''); }\nfunction norm(s) { return stripAccents(s).toLowerCase().replace(/\\s+/g, ' ').trim(); }\n\n// Normaliza para dígitos com DDI (Brasil por padrão). WhatsApp envia \"5511999999999\".\nfunction normalizePhone(raw) {\n  let d = String(raw || '').replace(/\\D/g, '');\n  if (!d) return '';\n  if (d.startsWith('00')) d = d.slice(2);\n  if (d.length === 10 || d.length === 11) d = '55' + d;\n  // Número móvel BR antigo sem o 9: 55 + DDD + 8 dígitos\n  if (d.length === 12 && d.startsWith('55') && /^[6-9]/.test(d.slice(4))) d = d.slice(0, 4) + '9' + d.slice(4);\n  return d;\n}\nfunction maskPhone(p) { const d = String(p || ''); return d.length > 6 ? d.slice(0, 4) + '*****' + d.slice(-2) : '***'; }\nfunction phoneHash(p) { return sha256('tel:' + normalizePhone(p)).slice(0, 16); }\n\n// Evita injeção de fórmulas em planilhas (=, +, -, @).\nfunction sanitizeCell(v) {\n  if (v === null || v === undefined) return '';\n  const s = String(v);\n  return /^[=+\\-@\\t\\r]/.test(s) ? \"'\" + s : s;\n}\n\n// ---- lib/config.js ----\n// Configuração da clínica: nada é inventado; campos pendentes bloqueiam o atendimento.\nconst PENDENTE = '__PREENCHER__';\nconst OBRIGATORIOS = [\n  'clinica.nome', 'clinica.endereco', 'clinica.telefone', 'clinica.maps_link',\n  'privacidade.politica_url', 'privacidade.contato_encarregado',\n  'equipe.whatsapp_alertas', 'whatsapp.templates.lembrete', 'whatsapp.templates.alerta_equipe',\n  'agenda.fuso_offset_minutos', 'agenda.horario_funcionamento',\n];\nfunction get(obj, path) { return path.split('.').reduce((o, k) => (o == null ? undefined : o[k]), obj); }\nfunction vazio(v) {\n  return v === undefined || v === null || v === '' || (typeof v === 'string' && v.includes(PENDENTE)) ||\n    (Array.isArray(v) && v.length === 0) || (typeof v === 'object' && !Array.isArray(v) && Object.keys(v).length === 0);\n}\nfunction carregarConfig(json) {\n  try { return JSON.parse(json); } catch (e) { return null; }\n}\nfunction validarConfig(cfg) {\n  if (!cfg) return { ok: false, faltando: ['CLINICA_CONFIG_JSON inválido ou ausente'] };\n  const faltando = OBRIGATORIOS.filter(p => vazio(get(cfg, p)));\n  const profs = cfg.profissionais || [];\n  if (!profs.length) faltando.push('profissionais');\n  profs.forEach((p, i) => ['id', 'nome', 'calendar_id'].forEach(k => { if (vazio(p[k])) faltando.push(`profissionais[${i}].${k}`); }));\n  const servs = cfg.servicos || [];\n  if (!servs.length) faltando.push('servicos');\n  servs.forEach((s, i) => {\n    ['codigo', 'nome'].forEach(k => { if (vazio(s[k])) faltando.push(`servicos[${i}].${k}`); });\n    if (s.agendavel_online !== false && !(s.duracao_min > 0)) faltando.push(`servicos[${i}].duracao_min`);\n    if (s.agendavel_online !== false && !(s.profissional_ids || []).length) faltando.push(`servicos[${i}].profissional_ids`);\n  });\n  return { ok: faltando.length === 0, faltando };\n}\nfunction servico(cfg, codigo) { return (cfg.servicos || []).find(s => s.codigo === codigo); }\nfunction profissional(cfg, id) { return (cfg.profissionais || []).find(p => p.id === id); }\n// Texto que o agente pode usar sobre a clínica (somente o que está configurado).\nfunction infoClinica(cfg, topico) {\n  const c = cfg.clinica || {};\n  const nd = 'Informação não configurada pela clínica. Não invente: ofereça encaminhar para a equipe.';\n  const val = v => (vazio(v) ? nd : v);\n  switch (topico) {\n    case 'endereco': return { endereco: val(c.endereco), maps_link: val(c.maps_link) };\n    case 'telefone': return { telefone: val(c.telefone) };\n    case 'horario_funcionamento': return { horario: val(cfg.agenda && cfg.agenda.horario_funcionamento_texto) };\n    case 'profissionais': return { profissionais: (cfg.profissionais || []).filter(p => !vazio(p.nome)).map(p => ({ id: p.id, nome: p.nome, especialidade: vazio(p.especialidade) ? undefined : p.especialidade })) };\n    case 'servicos': return { servicos: (cfg.servicos || []).map(s => ({ codigo: s.codigo, nome: s.nome, agendavel_online: s.agendavel_online !== false, descricao: vazio(s.descricao) ? undefined : s.descricao })) };\n    case 'precos': return { precos: (cfg.servicos || []).filter(s => !vazio(s.preco_texto)).map(s => ({ servico: s.nome, preco: s.preco_texto })), observacao: 'Se o serviço não aparece aqui, o preço não foi informado: não invente, ofereça avaliação ou equipe.' };\n    case 'formas_pagamento': return { formas_pagamento: val(c.formas_pagamento) };\n    case 'orientacoes_consulta': return { orientacoes: val(cfg.agenda && cfg.agenda.orientacoes_consulta) };\n    default: return { erro: 'topico_desconhecido', topicos: ['endereco', 'telefone', 'horario_funcionamento', 'profissionais', 'servicos', 'precos', 'formas_pagamento', 'orientacoes_consulta'] };\n  }\n}\n\n// ---- lib/retention.js ----\n// Linhas expiradas, em ordem DECRESCENTE de número de linha (para exclusão em lote sem deslocar índices).\nfunction expiradas(linhas, campoData, dias, agoraMs) {\n  const lim = agoraMs - dias * 86400000;\n  return linhas.filter(r => { const t = Date.parse(r[campoData]); return !Number.isNaN(t) && t < lim; })\n    .map(r => r.row_number).sort((a, b) => b - a);\n}\n// Monta batchUpdate da Sheets API (deleteDimension). row_number é 1-based, incluindo cabeçalho.\nfunction pedidosExclusao(sheetGid, rowNumbers) {\n  return rowNumbers.map(n => ({ deleteDimension: { range: { sheetId: sheetGid, dimension: 'ROWS', startIndex: n - 1, endIndex: n } } }));\n}\n\n// ---- nó: Expiradas em Auditoria ----\nconst cfg = carregarConfig($env.CLINICA_CONFIG_JSON);\nconst ret = (cfg.privacidade && cfg.privacidade.retencao) || {};\nconst dias = ((ret.auditoria_meses || 12) * 30);\nconst gid = Number($env.SHEET_GID_AUDITORIA);\nif (Number.isNaN(gid)) throw new Error('SHEET_GID_AUDITORIA não configurado');\nconst linhas = $input.all().map(i => i.json).filter(r => r.row_number);\nconst ids = expiradas(linhas, 'ocorrido_em', dias, Date.now());\nif (!ids.length) return [];\nreturn [{ json: { requests: pedidosExclusao(gid, ids) } }];"
+      },
+      "id": "4eeb0cf3-1a32-42b6-a3c2-902fa2f2e1cc",
+      "name": "Expiradas em Auditoria",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        780,
+        880
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://sheets.googleapis.com/v4/spreadsheets/{{ $env.SHEETS_ID }}:batchUpdate",
+        "options": {
+          "timeout": 30000,
+          "response": {
+            "response": {
+              "fullResponse": false,
+              "neverError": false
+            }
+          }
+        },
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleSheetsOAuth2Api",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ requests: $json.requests }) }}"
+      },
+      "id": "9e3be39d-661d-4c4d-a482-c10eca625cd5",
+      "name": "Excluir linhas expiradas de Auditoria",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1040,
+        880
+      ],
+      "onError": "stopWorkflow",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "",
+          "name": "Google Sheets - Vamos Sorrir"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Error Trigger": {
+      "main": [
+        [
+          {
+            "node": "Sanitizar erro",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sanitizar erro": {
+      "main": [
+        [
+          {
+            "node": "Buscar erros iguais",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Buscar erros iguais": {
+      "main": [
+        [
+          {
+            "node": "Throttle de alertas",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Throttle de alertas": {
+      "main": [
+        [
+          {
+            "node": "Linha do erro",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Linha do erro": {
+      "main": [
+        [
+          {
+            "node": "Gravar erro",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gravar erro": {
+      "main": [
+        [
+          {
+            "node": "Notificar equipe?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Notificar equipe?": {
+      "main": [
+        [
+          {
+            "node": "Preparar alerta de erro",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Preparar alerta de erro": {
+      "main": [
+        [
+          {
+            "node": "Alertar equipe (08)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "A cada 5 minutos": {
+      "main": [
+        [
+          {
+            "node": "Fila - erros a retentar",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fila - erros a retentar": {
+      "main": [
+        [
+          {
+            "node": "Selecionar vencidas",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Selecionar vencidas": {
+      "main": [
+        [
+          {
+            "node": "Reprocessar mensagem (01b)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Todos os dias às 3h (retenção)": {
+      "main": [
+        [
+          {
+            "node": "Ler Sessoes (retenção)",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Ler Fila_Entrada (retenção)",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Ler Erros (retenção)",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Ler Lembretes (retenção)",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Ler Auditoria (retenção)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ler Sessoes (retenção)": {
+      "main": [
+        [
+          {
+            "node": "Expiradas em Sessoes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Expiradas em Sessoes": {
+      "main": [
+        [
+          {
+            "node": "Excluir linhas expiradas de Sessoes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ler Fila_Entrada (retenção)": {
+      "main": [
+        [
+          {
+            "node": "Expiradas em Fila_Entrada",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Expiradas em Fila_Entrada": {
+      "main": [
+        [
+          {
+            "node": "Excluir linhas expiradas de Fila_Entrada",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ler Erros (retenção)": {
+      "main": [
+        [
+          {
+            "node": "Expiradas em Erros",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Expiradas em Erros": {
+      "main": [
+        [
+          {
+            "node": "Excluir linhas expiradas de Erros",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ler Lembretes (retenção)": {
+      "main": [
+        [
+          {
+            "node": "Expiradas em Lembretes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Expiradas em Lembretes": {
+      "main": [
+        [
+          {
+            "node": "Excluir linhas expiradas de Lembretes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ler Auditoria (retenção)": {
+      "main": [
+        [
+          {
+            "node": "Expiradas em Auditoria",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Expiradas em Auditoria": {
+      "main": [
+        [
+          {
+            "node": "Excluir linhas expiradas de Auditoria",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "America/Sao_Paulo",
+    "saveManualExecutions": false,
+    "saveDataSuccessExecution": "none",
+    "saveDataErrorExecution": "none",
+    "saveExecutionProgress": false
+  },
+  "active": false,
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "_id_logico": "10"
+}

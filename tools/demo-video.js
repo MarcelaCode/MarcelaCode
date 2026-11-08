@@ -10,12 +10,12 @@ const WDIR = path.join(__dirname, '..', 'workflows');
 const cache = {};
 const wf = p => { const f = fs.readdirSync(WDIR).find(x => x.startsWith(p + '-')); return cache[f] ||= JSON.parse(fs.readFileSync(path.join(WDIR, f), 'utf8')); };
 const ENV = { CLINICA_CONFIG_JSON: JSON.stringify(cfgTeste()) };
-async function rodar(p, no, { input = [{}], refs = {} } = {}) {
+async function rodar(p, no, { input = [{}], refs = {}, env = {}, helpers = {} } = {}) {
   const node = wf(p).nodes.find(n => n.name === no);
   const itens = input.map(j => ({ json: j }));
   const $ = n => { const l = refs[n].map(j => ({ json: j })); return { first: () => l[0], all: () => l }; };
   const fn = new AsyncFunction('$input', '$', '$env', 'require', node.parameters.jsCode);
-  return (await fn.call({ helpers: {} }, { first: () => itens[0], all: () => itens }, $, ENV, require)).map(i => i.json);
+  return (await fn.call({ helpers }, { first: () => itens[0], all: () => itens }, $, { ...ENV, ...env }, require)).map(i => i.json);
 }
 const ev = [];
 const say = (tipo, texto) => ev.push({ tipo, texto });
@@ -47,8 +47,47 @@ async function ferramenta(nome, input, texto) {
   r = await turno('sim');
   say('sistema', `rota = ${r.rota}  |  consentimento = ${r.estado.consentimento}  |  mensagem original recuperada`);
 
-  // 2. agenda em tempo real (Google simulado)
-  say('titulo', '2) Consulta de agenda (Google Agenda SIMULADO; cálculo REAL)');
+
+  // 2. áudio
+  say('titulo', '2) Mensagem de ÁUDIO (transcrição SIMULADA; demais etapas REAIS)');
+  const U = require('../lib/util');
+  const bodyWa = JSON.stringify({ entry: [{ changes: [{ value: { contacts: [{ wa_id: TEL, profile: { name: 'Ana' } }], messages: [{ id: 'wamid.AUDIO1', from: TEL, timestamp: String(Math.floor(Date.now() / 1000)), type: 'audio', audio: { id: 'MEDIA123', mime_type: 'audio/ogg; codecs=opus' } }] } }] }] });
+  say('paciente', '🎤 Mensagem de voz (0:07)');
+  const assinar = h => ({ first: () => ({ json: { headers: h }, binary: { data: {} } }) });
+  const nodeW = wf('01').nodes.find(n => n.name === 'Validar assinatura e normalizar');
+  const runW = async h => (await new AsyncFunction('$input', '$env', 'require', nodeW.parameters.jsCode).call({ helpers: { getBinaryDataBuffer: async () => Buffer.from(bodyWa) } }, assinar(h), { WHATSAPP_APP_SECRET: 'segredo' }, require))[0].json;
+  const ruim = await runW({ 'x-hub-signature-256': 'sha256=00' });
+  say('bloqueio', `Webhook com assinatura inválida → rejeitado (assinatura_ok = ${ruim.assinatura_ok})`);
+  const bom = await runW({ 'x-hub-signature-256': 'sha256=' + U.hmacSha256('segredo', bodyWa) });
+  const exp = (await rodar('01', 'Expandir mensagens', { input: [bom] }))[0];
+  say('ok', `Assinatura válida → mensagem normalizada: tipo = "${exp.mensagem.tipo}", roteada como "${exp.mensagem.tipo_logico}", media_id = ${exp.mensagem.media_id}`);
+  say('sistema', 'Fluxo: baixar mídia na Meta → enviar à transcrição → avaliar qualidade → agente (áudio nunca é salvo)');
+  const semCfg = (await rodar('02', 'Preparar', { input: [{ media_id: 'MEDIA123', _ctx: {} }] }))[0];
+  say('bloqueio', `Sem serviço de transcrição configurado → falha controlada: ${semCfg.falha}`);
+  const comCfg = (await rodar('02', 'Preparar', { input: [{ media_id: 'MEDIA123', _ctx: {} }], env: { TRANSCRIBE_API_URL: 'https://exemplo', TRANSCRIBE_API_KEY: 'x' } }))[0];
+  say('ok', `Com serviço configurado → segue para download (media_id = ${comCfg.media_id})`);
+  say('sistema', 'Respostas do serviço de transcrição abaixo são SIMULADAS; a avaliação de qualidade é REAL');
+  const avaliar = async r => (await rodar('02', 'Avaliar qualidade', { input: [r], refs: { Entrada: [{ _ctx: {} }] } }))[0];
+  let a = await avaliar({ text: 'Oi, queria marcar uma limpeza', segments: [{ avg_logprob: -0.2, no_speech_prob: 0.02 }] });
+  say('ok', `Áudio claro → ok = ${a.ok}, texto = "${a.texto}"`);
+  for (const [nome, r] of [['Áudio mudo', { text: ' ', segments: [] }], ['Só ruído', { text: 'hum', segments: [{ avg_logprob: -0.3, no_speech_prob: 0.92 }] }], ['Fala ininteligível', { text: 'blá blá ahn', segments: [{ avg_logprob: -1.9, no_speech_prob: 0.1 }] }]]) {
+    a = await avaliar(r); say('bloqueio', `${nome} → descartado (${a.motivo}); não segue com texto duvidoso`);
+  }
+  const m0 = { wamid: 'wamid.AUDIO2', telefone: TEL, timestamp: new Date().toISOString() };
+  const aviso = (await rodar('01b', 'Msg áudio ruim', { input: [{}], refs: { Entrada: [{ mensagem: m0 }] } }))[0];
+  say('bot', aviso.itens[0].texto);
+  const entAg = (await rodar('01b', 'Entrada do agente (áudio)', { input: [{ ok: true, texto: 'Estou com muita dor no dente e o rosto inchado, queria marcar' }], refs: { Entrada: [{ mensagem: { ...m0, nome_contato: 'Ana' } }] } }))[0];
+  say('paciente', '🎤 (transcrito) ' + entAg.texto);
+  estado = null; await turno('oi'); await turno('sim'); // paciente já consentiu
+  const linhaAudio = { telefone: TEL, ...serializar(estado) };
+  const ra = (await rodar('03', 'Preparar turno', { input: [linhaAudio], refs: { 'Validar configuração': [entAg] } }))[0];
+  estado = ra.estado;
+  const ctxl = estado.mensagens.at(-1).content[0].text.split('\n').filter(l => /^(origem|alerta_pre_triagem)/.test(l));
+  ctxl.forEach(l => say('sistema', 'Contexto enviado ao Claude → ' + l));
+  say('ok', `Urgência detectada no ÁUDIO pelas regras (antes do Claude): ${ra.urg.nivel} (${ra.urg.sinais.join(', ')})`);
+
+  // 3. agenda em tempo real (Google simulado)
+  say('titulo', '3) Consulta de agenda (Google Agenda SIMULADO; cálculo REAL)');
   const prep = (await rodar('05', 'Preparar consulta', { input: [{ servico_codigo: 'avaliacao', _ctx: {} }] }))[0];
   const ocupado = [{ start: new Date(prep.de + 2 * 3600000).toISOString(), end: new Date(prep.de + 30 * 3600000).toISOString() }];
   const cal = (await rodar('05', 'Calcular horários livres', { input: [{ calendars: { 'cal1@example.com': { busy: ocupado } } }], refs: { Entrada: [{ servico_codigo: 'avaliacao', _ctx: {} }], 'Preparar consulta': [prep] } }))[0];
@@ -60,7 +99,7 @@ async function ferramenta(nome, input, texto) {
   estado = ap.estado; say('sistema', `slots guardados na sessão: ${estado.slots_oferecidos.length}`);
 
   // 3. guardas de confirmação
-  say('titulo', '3) Guardas: nunca agenda sem confirmação explícita');
+  say('titulo', '4) Guardas: nunca agenda sem confirmação explícita');
   say('paciente', 'a primeira opção, meu nome é Ana Souza');
   r = await turno('a primeira opção, meu nome é Ana Souza');
   let d = await ferramenta('salvar_dados_paciente', { nome_completo: 'Ana Souza', servico_codigo: 'avaliacao' });
@@ -80,7 +119,7 @@ async function ferramenta(nome, input, texto) {
   say('ok', `Confirmação inequívoca em turno posterior → liberado: rota = ${d.rota_tool}, ação = ${d.acao}`);
 
   // 4. criação do evento (Google simulado)
-  say('titulo', '4) Criação do evento (anti-conflito; Google SIMULADO)');
+  say('titulo', '5) Criação do evento (anti-conflito; Google SIMULADO)');
   const prepC = (await rodar('06', 'Prep', { input: [{ op: 'executar', acao: d.acao, telefone: TEL, atendimento_id: estado.atendimento_id, nome: d.nome, servico_codigo: d.servico_codigo, slot: d.slot }] }))[0];
   const c = (await rodar('06', 'Preparar criação', { input: [prepC] }))[0];
   say('sistema', `ID do evento determinístico: ${c.evento_id}`);
@@ -91,13 +130,13 @@ async function ferramenta(nome, input, texto) {
   fim.mensagens_fixas.forEach(m => say('bot', m.texto));
 
   // 5. guardrail de saída
-  say('titulo', '5) Guardrails de saída do modelo');
+  say('titulo', '6) Guardrails de saída do modelo');
   const g = async t => (await rodar('03', 'Guardrails de saída', { input: [{ estado: { telefone: TEL, tmp: { acao_ok: false, fixas: [] }, mensagens: [] }, texto: t, iter: 1 }] }))[0].rota;
   for (const t of ['Pronto! Sua consulta está confirmada para amanhã.', 'Tome ibuprofeno 600 mg de 8 em 8 horas.', 'Você tem uma cárie profunda.', 'A limpeza custa R$ 150.']) say(await g(t) === 'guardrail' ? 'bloqueio' : 'sistema', `Modelo (simulado) diria: "${t}" → ${await g(t) === 'guardrail' ? 'BLOQUEADO e encaminhado a humano' : 'liberado'}`);
   say('ok', `Resposta normal ("Qual seu nome completo?") → ${await g('Qual seu nome completo?') === 'ok' ? 'liberada' : 'bloqueada'}`);
 
   // 6. urgência
-  say('titulo', '6) Urgência: regra determinística, antes do Claude');
+  say('titulo', '7) Urgência: regra determinística, antes do Claude');
   estado = null;
   for (const t of ['estou com dificuldade para respirar e o rosto inchado', 'quero falar com uma pessoa']) {
     say('paciente', t); r = await turno(t);
@@ -105,7 +144,7 @@ async function ferramenta(nome, input, texto) {
   }
 
   // 7. lembretes
-  say('titulo', '7) Lembretes: sem envio duplicado');
+  say('titulo', '8) Lembretes: sem envio duplicado');
   const amanha = new Date(Date.now() + 86400000).toISOString();
   const evg = id => ({ id, status: 'confirmed', start: { dateTime: amanha }, extendedProperties: { private: { clinica: 'vamos-sorrir', telefone: TEL, nome_paciente: 'Ana Souza', profissional_id: 'dr1' } } });
   const cand = (await rodar('09', 'Montar candidatos', { input: [{ items: [evg('e1'), evg('e2')] }] }))[0];
